@@ -96,10 +96,10 @@ void Calculate_Free_Energy(SPARC_OBJ *pSPARC, double *electronDens)
     #ifdef DEBUG
         // find change in Etot from previous SCF step
         dEtot = fabs(Etot - pSPARC->Etot) / pSPARC->n_atom;
-        if(!rank) printf("Etot    = %18.12f\nEband   = %18.12f\nE1      = %18.12f\nE2      = %18.12f\n"
+        if(!rank) printf("Etot    = %18.12f\nEband   = %18.12f\nE1      = %18.12f\nE2      = %18.12f\nE1+E2   = %18.12f\n"
                         "E3      = %18.12f\nExc     = %18.12f\nEsc     = %18.12f\nEntropy = %18.12f\n"
                         "dE = %.3e, dEband = %.3e\n", 
-                Etot, Eband, E1, E2, E3, pSPARC->Exc, pSPARC->Esc, pSPARC->Entropy, dEtot, dEband); 
+                Etot, Eband, E1, E2, E1+E2, E3, pSPARC->Exc, pSPARC->Esc, pSPARC->Entropy, dEtot, dEband); 
     #endif
     } else {
         // add the Exact exchange correction term    

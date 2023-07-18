@@ -41,11 +41,12 @@ void printElecDens(SPARC_OBJ *pSPARC) {
     int Nd = pSPARC->Nd;
     DMnd = pSPARC->Nd_d;
     
-    double *rho_at, *rho, *b_ref, *b;
+    double *rho_at, *rho, *b_ref, *b, *phi;
     rho_at = NULL;
     rho = NULL;
     b_ref = NULL;
     b = NULL;
+    phi = NULL;
     if (nproc_dmcomm_phi > 1) { // if there's more than one process, need to collect rho first
         // use DD2DD to collect distributed data
         int gridsizes[3], sdims[3], rdims[3], rDMVert[6];
@@ -81,6 +82,7 @@ void printElecDens(SPARC_OBJ *pSPARC) {
             rho    = (double*)malloc(pSPARC->Nd * n_rho * sizeof(double));
             b_ref  = (double*)malloc(pSPARC->Nd * sizeof(double));
             b      = (double*)malloc(pSPARC->Nd * sizeof(double));
+            phi    = (double*)malloc(pSPARC->Nd * sizeof(double));
         }
         // send rho_at, rho and b_ref
         D2D(&d2d_sender, &d2d_recvr, gridsizes, pSPARC->DMVertices, pSPARC->electronDens_at, rDMVert, 
@@ -109,6 +111,9 @@ void printElecDens(SPARC_OBJ *pSPARC) {
         D2D(&d2d_sender, &d2d_recvr, gridsizes, pSPARC->DMVertices, pSPARC->psdChrgDens, rDMVert, 
             b, pSPARC->dmcomm_phi, sdims, recv_comm, rdims, pSPARC->dmcomm_phi);
         
+        D2D(&d2d_sender, &d2d_recvr, gridsizes, pSPARC->DMVertices, pSPARC->elecstPotential, rDMVert, 
+            b, pSPARC->dmcomm_phi, sdims, recv_comm, rdims, pSPARC->dmcomm_phi);
+
         // free D2D targets
         Free_D2D_Target(&d2d_sender, &d2d_recvr, pSPARC->dmcomm_phi, recv_comm);
         if (rank_dmcomm_phi == 0) 
@@ -118,15 +123,21 @@ void printElecDens(SPARC_OBJ *pSPARC) {
         rho    = pSPARC->electronDens;
         b_ref  = pSPARC->psdChrgDens_ref;
         b      = pSPARC->psdChrgDens;
+        phi    = pSPARC->elecstPotential;
     }
     
     if (rank_dmcomm_phi == 0) {
+        char PhiFilename[128];
+        snprintf(PhiFilename,  128, "%s.phi",   pSPARC->filename_out);
+
         if (pSPARC->Nspin == 1) {
             // printing total electron density in cube format
             printDens_cube(pSPARC, rho, pSPARC->DensTCubFilename, "Electron density");
+            printDens_cube(pSPARC, phi,         PhiFilename, "Electrostatic potential");
         } else {
             // printing total, spin-up and spin-down electron density in cube format
             printDens_cube(pSPARC, rho, pSPARC->DensTCubFilename, "Total electron density");
+            printDens_cube(pSPARC, phi,         PhiFilename, "Electrostatic potential");
             printDens_cube(pSPARC, rho+Nd, pSPARC->DensUCubFilename, "Spin-up electron density");
             printDens_cube(pSPARC, rho+2*Nd, pSPARC->DensDCubFilename, "Spin-down electron density");
         }
@@ -139,6 +150,7 @@ void printElecDens(SPARC_OBJ *pSPARC) {
             free(rho);
             free(b_ref);
             free(b);
+            free(phi);
         }
     }
 }

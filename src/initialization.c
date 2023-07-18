@@ -44,7 +44,7 @@
 #define min(x,y) ((x)<(y)?(x):(y))
 #define max(x,y) ((x)>(y)?(x):(y))
 
-#define N_MEMBR 167
+#define N_MEMBR 175
 
 
 
@@ -555,6 +555,15 @@ void set_defaults(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
     //strncpy(pSPARC_Input->XC, "LDA",sizeof(pSPARC_Input->XC));          // default exchange-correlation approx: LDA
     strncpy(pSPARC_Input->XC, "UNDEFINED",sizeof(pSPARC_Input->XC));      // default: UNDEFINED
 
+    /* default electrostatics. */
+	pSPARC_Input->ElectricFieldX = 0.0;
+	pSPARC_Input->ElectricFieldY = 0.0;
+	pSPARC_Input->ElectricFieldZ = 0.0;
+    pSPARC_Input->L_MAX_Molecule = 6;        // default number of terms for molecule BC
+    pSPARC_Input->L_MAX_1_Wire   = 6;        // default number of terms for wire BC: log terms
+    pSPARC_Input->L_MAX_2_Wire   = 0;        // default number of terms for wire BC: Bessel terms
+    pSPARC_Input->ECUT_Surface   = 0.0;      // energy cutoff for Fourier expansion in surface BC (0 means no terms)
+
     /* default Chebyshev filter */
     pSPARC_Input->ChebDegree = -1;            // default chebyshev polynomial degree (will be automatically found based on spectral width)
     pSPARC_Input->CheFSI_Optmz = 0;           // default is off
@@ -628,8 +637,9 @@ void set_defaults(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
     pSPARC_Input->Printrestart_fq = 1;        // Steps after which the output is written in the restart file
     pSPARC_Input->PrintPsiFlag[0] = 0;        // Flag for printing Kohn-Sham orbitals
     for (int i = 1; i < 7; i++) 
-        pSPARC_Input->PrintPsiFlag[i] = -1;   // defualt spin, kpt, band start and end index for printing psi
+        pSPARC_Input->PrintPsiFlag[i] = -1;   // default spin, kpt, band start and end index for printing psi
     pSPARC_Input->PrintEnergyDensFlag = 0;    // flag for printing kinetic energy density
+    pSPARC_Input->PrintElectrostaticsFlag = 0; // flag for printing electrostatics
     
     /* Default pSPARC members */
     pSPARC->is_default_psd = 0;               // default pseudopotential path is disabled
@@ -1091,6 +1101,7 @@ void SPARC_copy_input(SPARC_OBJ *pSPARC, SPARC_INPUT_OBJ *pSPARC_Input) {
     pSPARC->PrintAtomVelFlag = pSPARC_Input->PrintAtomVelFlag;
     pSPARC->PrintEigenFlag = pSPARC_Input->PrintEigenFlag;
     pSPARC->PrintElecDensFlag = pSPARC_Input->PrintElecDensFlag;
+    pSPARC->PrintElectrostaticsFlag = pSPARC_Input->PrintElectrostaticsFlag;
     pSPARC->PrintMDout = pSPARC_Input->PrintMDout;
     pSPARC->PrintRelaxout = pSPARC_Input->PrintRelaxout;
     pSPARC->Printrestart = pSPARC_Input->Printrestart;
@@ -1209,6 +1220,13 @@ void SPARC_copy_input(SPARC_OBJ *pSPARC, SPARC_INPUT_OBJ *pSPARC_Input) {
     pSPARC->SQ_fac_g2c = pSPARC_Input->SQ_fac_g2c;
     pSPARC->SQ_tol_occ = pSPARC_Input->SQ_tol_occ;
     pSPARC->SQ_eigshift = pSPARC_Input->SQ_eigshift;
+    pSPARC->ElectricFieldX = pSPARC_Input->ElectricFieldX;
+    pSPARC->ElectricFieldY = pSPARC_Input->ElectricFieldY;
+    pSPARC->ElectricFieldZ = pSPARC_Input->ElectricFieldZ;
+    pSPARC->L_MAX_Molecule = pSPARC_Input->L_MAX_Molecule;
+    pSPARC->L_MAX_1_Wire   = pSPARC_Input->L_MAX_1_Wire;
+    pSPARC->L_MAX_2_Wire   = pSPARC_Input->L_MAX_2_Wire;
+    pSPARC->ECUT_Surface   = pSPARC_Input->ECUT_Surface;
 
     // char type values
     strncpy(pSPARC->MDMeth , pSPARC_Input->MDMeth,sizeof(pSPARC->MDMeth));
@@ -3173,6 +3191,7 @@ void write_output_init(SPARC_OBJ *pSPARC) {
     fprintf(output_fp," %s", pSPARC->BCy == 0 ? "P" : "D");
     fprintf(output_fp," %s", pSPARC->BCz == 0 ? "P" : "D");
     fprintf(output_fp,"\n");
+    fprintf(output_fp,"ELECTRIC_FIELD: %.15g %.15g %.15g \n",pSPARC->ElectricFieldX,pSPARC->ElectricFieldY,pSPARC->ElectricFieldZ);
     if (pSPARC->BC>1 && !pSPARC->SQFlag) {
         fprintf(output_fp,"KPOINT_GRID: %d %d %d\n",pSPARC->Kx,pSPARC->Ky,pSPARC->Kz);
         fprintf(output_fp,"KPOINT_SHIFT: %.15g %.15g %.15g\n",pSPARC->kptshift[0],pSPARC->kptshift[1],pSPARC->kptshift[2]);
@@ -3325,6 +3344,10 @@ void write_output_init(SPARC_OBJ *pSPARC) {
     fprintf(output_fp,"TOL_POISSON: %.2E\n",pSPARC->TOL_POISSON);
     fprintf(output_fp,"TOL_LANCZOS: %.2E\n",pSPARC->TOL_LANCZOS);
     fprintf(output_fp,"TOL_PSEUDOCHARGE: %.2E\n",pSPARC->TOL_PSEUDOCHARGE);
+    fprintf(output_fp,"L_MAX_MOLECULE: %d\n",pSPARC->L_MAX_Molecule);
+    fprintf(output_fp,"L_MAX_1_WIRE: %d\n"  ,pSPARC->L_MAX_1_Wire);
+    fprintf(output_fp,"L_MAX_2_WIRE: %d\n"  ,pSPARC->L_MAX_2_Wire);
+    fprintf(output_fp,"ECUT_SURFACE: %.2E\n",pSPARC->ECUT_Surface);
     if (pSPARC->MixingVariable == 0) {
         fprintf(output_fp,"MIXING_VARIABLE: density\n");
     } else if (pSPARC->MixingVariable == 1) {
@@ -3428,6 +3451,7 @@ void write_output_init(SPARC_OBJ *pSPARC) {
     }
     fprintf(output_fp,"PRINT_ENERGY_DENSITY: %d\n",pSPARC->PrintEnergyDensFlag);
 
+    fprintf(output_fp,"PRINT_ELECTROSTATICS: %d\n",pSPARC->PrintElectrostaticsFlag);
     if (pSPARC->RelaxFlag == 1) {
         fprintf(output_fp,"TOL_RELAX: %.2E\n",pSPARC->TOL_RELAX);
         fprintf(output_fp,"PRINT_RELAXOUT: %d\n",pSPARC->PrintRelaxout);
@@ -3635,7 +3659,10 @@ void SPARC_Input_MPI_create(MPI_Datatype *pSPARC_INPUT_MPI) {
                                          MPI_INT, MPI_INT, MPI_INT, MPI_INT, MPI_INT, 
                                          MPI_INT, MPI_INT, MPI_INT, MPI_INT, MPI_INT, 
                                          MPI_INT, MPI_INT, MPI_INT, MPI_INT, MPI_INT,
-                                         MPI_INT, MPI_INT, MPI_INT, MPI_INT,
+                                         MPI_INT, MPI_INT, MPI_INT, MPI_INT, MPI_INT,
+                                         MPI_INT, MPI_INT, MPI_INT,
+
+
                                          MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE,
                                          MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE,
                                          MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE,
@@ -3648,7 +3675,8 @@ void SPARC_Input_MPI_create(MPI_Datatype *pSPARC_INPUT_MPI) {
                                          MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, 
                                          MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, 
                                          MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, 
-                                         MPI_DOUBLE, MPI_DOUBLE,
+                                         MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE,
+                                         MPI_DOUBLE, 
                                          MPI_CHAR, MPI_CHAR, MPI_CHAR, MPI_CHAR, MPI_CHAR,
                                          MPI_CHAR};
     int blens[N_MEMBR] = {1, 1, 1, 1, 1,
@@ -3670,7 +3698,8 @@ void SPARC_Input_MPI_create(MPI_Datatype *pSPARC_INPUT_MPI) {
                           1, 1, 1, 1, 1, 
                           3, 1, 1, 1, 1, 
                           1, 1, 1, 1, 1, 
-                          1, 7, 1, 1, /* int */ 
+                          1, 7, 1, 1, 1,
+                          1, 1, 1,       /* int */ 
                           1, 1, 1, 1, 1, 
                           1, 9, 1, 1, 3,
                           1, 1, 1, 1, 1,
@@ -3683,7 +3712,8 @@ void SPARC_Input_MPI_create(MPI_Datatype *pSPARC_INPUT_MPI) {
                           1, 1, 1, L_QMASS, 1,
                           1, 1, 1, 1, 1, 
                           1, 1, 1, 1, 1,
-                          1, 1, /* double */
+                          1, 1, 1, 1, 1,
+                          1,             /* double */
                           32, 32, 32, L_STRING, L_STRING, /* char */
                           L_STRING};
 
@@ -3791,6 +3821,10 @@ void SPARC_Input_MPI_create(MPI_Datatype *pSPARC_INPUT_MPI) {
     MPI_Get_address(&sparc_input_tmp.PrintPsiFlag, addr + i++);
     MPI_Get_address(&sparc_input_tmp.PrintEnergyDensFlag, addr + i++);
     MPI_Get_address(&sparc_input_tmp.eig_paral_maxnp, addr + i++);
+    MPI_Get_address(&sparc_input_tmp.PrintElectrostaticsFlag, addr + i++);
+    MPI_Get_address(&sparc_input_tmp.L_MAX_Molecule, addr + i++);
+    MPI_Get_address(&sparc_input_tmp.L_MAX_1_Wire, addr + i++);
+    MPI_Get_address(&sparc_input_tmp.L_MAX_2_Wire, addr + i++);
     // double type
     MPI_Get_address(&sparc_input_tmp.range_x, addr + i++);
     MPI_Get_address(&sparc_input_tmp.range_y, addr + i++);
@@ -3854,6 +3888,10 @@ void SPARC_Input_MPI_create(MPI_Datatype *pSPARC_INPUT_MPI) {
     MPI_Get_address(&sparc_input_tmp.SQ_fac_g2c, addr + i++);
     MPI_Get_address(&sparc_input_tmp.SQ_tol_occ, addr + i++);
     MPI_Get_address(&sparc_input_tmp.SQ_eigshift, addr + i++);
+    MPI_Get_address(&sparc_input_tmp.ElectricFieldX, addr + i++);
+    MPI_Get_address(&sparc_input_tmp.ElectricFieldY, addr + i++);
+    MPI_Get_address(&sparc_input_tmp.ElectricFieldZ, addr + i++);
+    MPI_Get_address(&sparc_input_tmp.ECUT_Surface, addr + i++); 
     // char type
     MPI_Get_address(&sparc_input_tmp.MDMeth, addr + i++);
     MPI_Get_address(&sparc_input_tmp.RelaxMeth, addr + i++);

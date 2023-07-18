@@ -71,6 +71,8 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
     int Flag_kptshift = 0;
     int Flag_fdgrid, Flag_ecut, Flag_meshspacing;
     Flag_fdgrid = Flag_ecut = Flag_meshspacing = 0;
+    int Flag_ElectricField_X = 0, Flag_ElectricField_Y = 0, Flag_ElectricField_Z = 0;
+    int Flag_L_MAX_Molecule = 0, Flag_L_MAX_1_Wire = 0, Flag_L_MAX_2_Wire = 0, Flag_ECUT_Surface = 0;
     int Flag_tol_relaxcell = 0;
 
     snprintf(input_filename, L_STRING, "%s.inpt", pSPARC_Input->filename);
@@ -184,6 +186,34 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
                 exit(EXIT_FAILURE);
             }
             snprintf(str, L_STRING, "undefined");    // initialize str
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"ELECTRIC_FIELD_X:") == 0) { 
+            fscanf(input_fp,"%lf",&pSPARC_Input->ElectricFieldX);
+            Flag_ElectricField_X++; // check if electric field X is defined
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"ELECTRIC_FIELD_Y:") == 0) { 
+            fscanf(input_fp,"%lf",&pSPARC_Input->ElectricFieldY);
+            Flag_ElectricField_Y++; // check if electric field Y is defined
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"ELECTRIC_FIELD_Z:") == 0) { 
+            fscanf(input_fp,"%lf",&pSPARC_Input->ElectricFieldZ);
+            Flag_ElectricField_Z++; // check if electric field Z is defined
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"L_MAX_MOLECULE:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->L_MAX_Molecule);
+            Flag_L_MAX_Molecule++;
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"L_MAX_1_WIRE:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->L_MAX_1_Wire);
+            Flag_L_MAX_1_Wire++;
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"L_MAX_2_WIRE:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->L_MAX_2_Wire);
+            Flag_L_MAX_2_Wire++;
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"ECUT_SURFACE:") == 0) {
+            fscanf(input_fp,"%lf",&pSPARC_Input->ECUT_Surface);
+            Flag_ECUT_Surface++;
             fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"POISSON_SOLVER:") == 0){
             // read solver type
@@ -553,6 +583,9 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
             fscanf(input_fp, "%*[^\n]\n");
         } else if(strcmpi(str,"PRINT_ENERGY_DENSITY:") == 0) {
             fscanf(input_fp,"%d",&pSPARC_Input->PrintEnergyDensFlag);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"PRINT_ELECTROSTATICS:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->PrintElectrostaticsFlag);
             fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"EXCHANGE_CORRELATION:") == 0) {
             fscanf(input_fp,"%s",pSPARC_Input->XC);  
@@ -963,6 +996,39 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
             pSPARC_Input->kptshift[2] = 0.5;
         }
     }
+
+    // check electric field is applied along finite directions only
+    if ( (Flag_ElectricField_X > 0) && (pSPARC_Input->BCx == 0) ) {
+        printf("\nElectric Field cannot be applied along a periodic direction (X)!\n");
+        exit(EXIT_FAILURE);
+    }
+    if ( (Flag_ElectricField_Y > 0) && (pSPARC_Input->BCy == 0) ) {
+        printf("\nElectric Field cannot be applied along a periodic direction (Y)!\n");
+        exit(EXIT_FAILURE);
+    }
+    if ( (Flag_ElectricField_Z > 0) && (pSPARC_Input->BCz == 0) ) {
+        printf("\nElectric Field cannot be applied along a periodic direction (Z)!\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // check terms in expansions for Boundary Conditions
+    if ( (Flag_L_MAX_Molecule > 0) && ((pSPARC_Input->L_MAX_Molecule > 6) || (pSPARC_Input->L_MAX_Molecule < 0)) ) {
+        printf("\nL_MAX_Molecule must be between 0 and 6\n");
+        exit(EXIT_FAILURE);
+    }
+    //if ( (Flag_L_MAX_1_Wire > 0) && ((pSPARC_Input->L_MAX_1_Wire > 6) || (pSPARC_Input->L_MAX_1_Wire < 0)) ) {
+    //    printf("\nL_MAX_1_Wire must be between 0 and 6\n");
+    //    exit(EXIT_FAILURE);
+    //}
+    //if ( (Flag_L_MAX_2_Wire > 0) && ((pSPARC_Input->L_MAX_2_Wire > 6) || (pSPARC_Input->L_MAX_2_Wire < 0)) ) {
+    //    printf("\nL_MAX_2_Wire must be between 0 and 6\n");
+    //    exit(EXIT_FAILURE);
+    //}
+    if ( (Flag_ECUT_Surface > 0) && (pSPARC_Input->ECUT_Surface < 0) ) {
+        printf("\nECUT_Surface must be non-negative\n");
+        exit(EXIT_FAILURE);
+    }
+
     free(input_filename);
     free(str);
     free(temp);

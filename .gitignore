@@ -5,3 +5,4 @@ sparc-EVA
 sparc
 .vscode
 dev_tests
+src/makefile

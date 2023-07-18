@@ -13,7 +13,7 @@ USE_DP_SUBEIG = 0
 # Set USE_FFTW = 1 to use FFTW for fast Fourier transform in vdWDF. Don't open it together with USE_MKL
 USE_FFTW      = 0
 # Set DEBUG_MODE = 1 to run with debug mode and print debug output
-DEBUG_MODE    = 0
+DEBUG_MODE    = 1
 
 # Enable SIMD vectorization for complex stencil routines
 # CAUTION: for some compilers this results in wrong results! Use for intel/19.0.3 or later versions
@@ -84,6 +84,7 @@ OBJSC = main.o initialization.o readfiles.o atomdata.o parallelization.o relax.o
         linearSolver.o mixing.o exchangeCorrelation.o eigenSolver.o eigenSolverKpt.o energy.o      \
         forces.o stress.o pressure.o finalization.o spinOrbitCoupling.o printing.o \
         linearAlgebra.o \
+        bessel.o\
         xc/vdW/d3/d3correction.o xc/vdW/d3/d3findR0ab.o xc/vdW/d3/d3copyC6.o                       \
         xc/vdW/d3/d3initialization.o xc/vdW/d3/d3finalization.o xc/vdW/d3/d3forceStress.o          \
         xc/vdW/vdWDF/vdWDFinitialization.o xc/vdW/vdWDF/vdWDFfinalization.o                        \

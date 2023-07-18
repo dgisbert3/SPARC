@@ -549,6 +549,14 @@ typedef struct _SPARC_OBJ{
     double elec_T;      // electronic temperature in [Kelvin] or [Hartree] 
     double rho;         // electron density
     char XC[32];        // exchange correlation name
+    double ElectricFieldX; // external electric field in X direction
+    double ElectricFieldY; // external electric field in Y direction
+    double ElectricFieldZ; // external electric field in Z direction
+
+    int L_MAX_Molecule;  // default number of terms for molecule BC
+    int L_MAX_1_Wire;    // default number of terms for wire BC: log terms
+    int L_MAX_2_Wire;    // default number of terms for wire BC: Bessel terms
+    double ECUT_Surface; // default ecut for Fourier terms for surface BC    
     /////////////////////////////////////////////////////////
     int is_default_psd;     // flag for reading pseudopotential
     int NLCC_flag;          // flag for Non-Linear Core Correction (NLCC)
@@ -856,7 +864,7 @@ typedef struct _SPARC_OBJ{
     int flag_kpttopo_dm;            // flag of whether the dmcomm and kpttopo are the same
     int flag_kpttopo_dm_type;       // flag for receving or sending the correct occupations
     MPI_Comm kpttopo_dmcomm_inter;  // the extra communicator for occupations transferring 
-    // variabels for band parallelization with ACE
+    // variables for band parallelization with ACE
     int desc_M[2][9];               // descriptor for matirx M in ACE case
     int desc_Xi[2][9];              // ScaLAPACK descriptor for storage of the orbitals on each blacscomm
     int nrows_M[2];                 // local number of row of M matrix
@@ -909,6 +917,7 @@ typedef struct _SPARC_OBJ{
     int suffixNum;  // the number appended to the output filename, only used if it's greater than 0    
     int PrintPsiFlag[7];
     int PrintEnergyDensFlag;
+    int PrintElectrostaticsFlag;
     
     /* Energy density */
     double *KineticRho;         // Kinetic energy density
@@ -982,8 +991,15 @@ typedef struct _SPARC_INPUT_OBJ{
     int Nstates;        // number of states
     int Ntypes;         // number of atome types
     int NetCharge;      // net charge of the system
-    
+    double ElectricFieldX; // external electric field in X direction
+    double ElectricFieldY; // external electric field in X direction
+    double ElectricFieldZ; // external electric field in X direction
     int order;          // order of central difference    
+
+    int L_MAX_Molecule;  // default number of terms for molecule BC
+    int L_MAX_1_Wire;    // default number of terms for wire BC: log terms
+    int L_MAX_2_Wire;    // default number of terms for wire BC: Bessel terms
+    double ECUT_Surface; // default ecut for Fourier terms for surface BC    
 
     /* Chebyshev filtering */
     int ChebDegree;     // degree of Chebyshev polynomial   
@@ -1032,7 +1048,8 @@ typedef struct _SPARC_INPUT_OBJ{
     int Printrestart_fq;
     int PrintPsiFlag[7];
     int PrintEnergyDensFlag;
-    
+    int PrintElectrostaticsFlag;
+
     /* Smearing */
     int elec_T_type;    // electronic temperature (smearing) type, 0 - fermi-dirac, 1 - gaussian
     

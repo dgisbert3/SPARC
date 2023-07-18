@@ -21,6 +21,7 @@
 #include "gradVecRoutines.h"
 #include "initialization.h"
 #include "isddft.h"
+#include "bessel.h"
 
 #include <mpi.h>
 // #include <cblas.h> 
@@ -1529,6 +1530,16 @@ void poisson_RHS(SPARC_OBJ *pSPARC, double *rhs) {
 		// multipole expansion for Dirichlet BC!
 		double *d_cor = (double *)malloc( DMnd * sizeof(double) );
 		PartrialDipole_wire(pSPARC, rhs, d_cor);
+		//PartrialDipole_wire_old(pSPARC, rhs, d_cor);
+
+        if(!rank){
+            double d_cor_norm = 0;
+            for (int i = 0; i < DMnd; i++){
+			    d_cor_norm += d_cor[i]*d_cor[i];
+            }
+            d_cor_norm = sqrt(d_cor_norm);
+            printf("d_cor_norm = %.12f\n",d_cor_norm);
+        }
 
 		for (int i = 0; i < DMnd; i++) rhs[i] -= d_cor[i];
 		free(d_cor);
@@ -1667,7 +1678,7 @@ void MultipoleExpansion_phi(SPARC_OBJ *pSPARC, double *f, double *d_cor)
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     
-    int LMAX = 6, l, m, i, j, k, p, DMnx, DMny, DMnz, DMnd, count, index, Q_len,
+    int LMAX, l, m, i, j, k, p, DMnx, DMny, DMnz, DMnd, count, index, Q_len,
         FDn, Nx, Ny, Nz, i_global, j_global, k_global, nbr_i, is, ie, js, je,
         ks, ke, nx_cor, ny_cor, nz_cor, nd_cor, is_phi, ie_phi, js_phi, je_phi,
         ks_phi, ke_phi, nx_phi, ny_phi, nz_phi, nd_phi, i_phi, j_phi, k_phi,
@@ -1675,6 +1686,7 @@ void MultipoleExpansion_phi(SPARC_OBJ *pSPARC, double *f, double *d_cor)
     double *Qlm, Lx, Ly, Lz, *r_pos_x, *r_pos_y, *r_pos_z, *r_pos_r, *r_pow_l,
            *Ylm, *phi, x, y, z, r, x2, y2, z2;
     
+    LMAX = pSPARC->L_MAX_Molecule;
     FDn = pSPARC->order / 2;
     
     DMnx = pSPARC->Nx_d;
@@ -1687,6 +1699,9 @@ void MultipoleExpansion_phi(SPARC_OBJ *pSPARC, double *f, double *d_cor)
     Nx = pSPARC->Nx;
     Ny = pSPARC->Ny;
     Nz = pSPARC->Nz;
+    double EFX = pSPARC->ElectricFieldX;
+    double EFY = pSPARC->ElectricFieldY;
+    double EFZ = pSPARC->ElectricFieldZ;
 
     /* find multipole moments Qlm */
     r_pos_x = (double *)malloc( sizeof(double) * DMnd );
@@ -1743,17 +1758,27 @@ void MultipoleExpansion_phi(SPARC_OBJ *pSPARC, double *f, double *d_cor)
     MPI_Allreduce(MPI_IN_PLACE, Qlm, Q_len, MPI_DOUBLE, MPI_SUM, pSPARC->dmcomm_phi); 
 
     #ifdef DEBUG
-    // Calculate dipole moment based on the Qlm values
-    // dipole moment vector = (\int {x * rho} dV, \int {y * rho} dV, \int {z * rho} dV)
-    // dipole moment value is defined as the length of the dipole moment vector
-    // Note:
-    //   1. Qlm is defined using the spherical harmonics, which contains a factor of sqrt(3/(4*pi))
-    //   2. Qlm is calculated using f = 4*pi*(rho+b), which includes another factor of 4*pi
-    double dipole_moment = sqrt(Qlm[1] * Qlm[1] + Qlm[2] * Qlm[2] + Qlm[3] * Qlm[3]);
-    const double Debye2eBohr = 0.3934303; // 1 Debye = 0.3934303 e*Bohr
-    const double eBohr2Debye = 1.0 / Debye2eBohr;
-    dipole_moment = dipole_moment / (4.0*M_PI*sqrt(3.0/4.0/M_PI)) * eBohr2Debye;
-    if (rank == 0) printf("Dipole moment: %.6f (Debye)\n", dipole_moment);
+    if (LMAX>0){
+        // Calculate dipole moment based on the Qlm values
+        // dipole moment vector = (\int {x * rho} dV, \int {y * rho} dV, \int {z * rho} dV)
+        // dipole moment value is defined as the length of the dipole moment vector
+        // Note:
+        //   1. Qlm is defined using the spherical harmonics, which contains a factor of sqrt(3/(4*pi))
+        //   2. Qlm is calculated using f = 4*pi*(rho+b), which includes another factor of 4*pi
+        double dipole_moment = sqrt(Qlm[1] * Qlm[1] + Qlm[2] * Qlm[2] + Qlm[3] * Qlm[3]);
+        const double Debye2eBohr = 0.3934303; // 1 Debye = 0.3934303 e*Bohr
+        const double eBohr2Debye = 1.0 / Debye2eBohr;
+        dipole_moment = dipole_moment / (4.0*M_PI*sqrt(3.0/4.0/M_PI)) * eBohr2Debye;
+        if (rank == 0) printf("Dipole moment: %.6f (Debye)\n", dipole_moment);
+    }
+    // Print Qlm values
+    index = 0;
+    for (l = 0; l <= LMAX; l++) {
+        for (m = -l; m <= l; m++) {
+            if (rank == 0) printf("Qlm[ l:% d, m:% d] = % 11.6f a.u.\n", l, m, Qlm[index]);
+            index++;
+        }
+    }
     #endif
 
 	/* find "charge correction" (boudary correction) */
@@ -1827,6 +1852,10 @@ void MultipoleExpansion_phi(SPARC_OBJ *pSPARC, double *f, double *d_cor)
                     r_pos_y[count] = y;
                     r_pos_z[count] = z;
                     r_pos_r[count] = r;
+
+                    // add external electric field
+                    phi[count] -= ( x * EFX + y * EFY + z * EFZ );
+
                     count++;
                 }
             }
@@ -1907,6 +1936,9 @@ void PartrialDipole_surface(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 #define d_cor(i,j,k) d_cor[(k)*DMnx*DMny+(j)*DMnx+(i)]
 #define f(i,j,k) f[(k)*DMnx*DMny+(j)*DMnx+(i)]
 #define phi(i,j,k) phi[(k)*nx_phi*ny_phi+(j)*nx_phi+(i)]
+
+    int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
 	if (pSPARC->dmcomm_phi == MPI_COMM_NULL) return; 
 
 	int FDn = pSPARC->order / 2;
@@ -1946,6 +1978,11 @@ void PartrialDipole_surface(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 	meshsizes[0] = pSPARC->delta_x;
 	meshsizes[1] = pSPARC->delta_y;
 	meshsizes[2] = pSPARC->delta_z;
+    double electricfield[3];
+    electricfield[0] = pSPARC->ElectricFieldX;
+    electricfield[1] = pSPARC->ElectricFieldY;
+    electricfield[2] = pSPARC->ElectricFieldZ;
+    double Energy_Cutoff = pSPARC->ECUT_Surface;
 
 	// find Dirichlet direction and call it the Z direction
 	int dir_Z = (pSPARC->BCx == 1) ? 0 : (pSPARC->BCy == 1 ? 1 : 2);
@@ -1958,12 +1995,12 @@ void PartrialDipole_surface(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 	int NY = gridsizes[dir_Y]; 
 	// int NZ = gridsizes[dir_Z];
 	int NXY = NX * NY;
-	// int DMnX = DMsizes[dir_X];
-	// int DMnY = DMsizes[dir_Y];
+	int DMnX = DMsizes[dir_X];
+	int DMnY = DMsizes[dir_Y];
 	int DMnZ = DMsizes[dir_Z];
 	double LX = cellsizes[dir_X];  
 	double LY = cellsizes[dir_Y];  
-	// double LZ = cellsizes[dir_Z];
+	double LZ = cellsizes[dir_Z];
 	// double dX = meshsizes[dir_X]; 
 	// double dY = meshsizes[dir_Y]; 
 	double dZ = meshsizes[dir_Z];
@@ -1992,7 +2029,66 @@ void PartrialDipole_surface(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 		rho_av[k] /= (NXY*4*M_PI);
 	}
 
-	// Create sub-comm slices of the Cartesian topology
+    //** High order terms **//
+    double K_Norm_Cutoff = sqrt(2*Energy_Cutoff);
+    double cosAlpha = 0.0; // alpha: angle between lattice vectors dir_X, dir_Y
+    for(int k = 0; k < 3; k++){
+        cosAlpha += pSPARC->LatUVec[3*dir_X + k] * pSPARC->LatUVec[3*dir_Y + k];
+    }
+
+	int Num_MN = 0;
+    int    *M_indices =    (int *)calloc( NXY, sizeof(int));
+    int    *N_indices =    (int *)calloc( NXY, sizeof(int));
+    double *K_Norm_MN = (double *)calloc( NXY, sizeof(double));
+    for (int i = 0; i < NX; i++) {
+		for (int j = 0; j < NY; j++) {
+            int m = i - 1*ceil(NX/2);
+            int n = j - 1*ceil(NY/2);
+            if ((m<0) || ((m==0) && (n<=0))){ // We just compute (m,n) since we know (-m,-n) will have same real contribution to phi
+                continue;
+            }
+            double norm = sqrt((m/LX)*(m/LX)+(n/LY)*(n/LY)+2*(m/LX)*(n/LY)*cosAlpha); // inverse of norm of reciprocal of wavevector k
+            if ( norm < K_Norm_Cutoff ){ // Consider only (m,n) with 1/2*Knorm^2 < Energy_Cutoff
+                M_indices[Num_MN] = m;
+                N_indices[Num_MN] = n;
+                K_Norm_MN[Num_MN] = norm;
+                Num_MN++;
+            }
+        }
+    }
+    M_indices =    (int *)realloc( M_indices, Num_MN * sizeof(int)   );
+    N_indices =    (int *)realloc( N_indices, Num_MN * sizeof(int)   );
+    K_Norm_MN = (double *)realloc( K_Norm_MN, Num_MN * sizeof(double));
+
+    // Find rho_av_mn = int (rho + b) * exp( -i * 2*M_PI*( a*m/NX + b*n/NY ) ) dXdY / int (1) dXdY locally
+    double complex *rho_av_mn = (double complex*)calloc( DMnZ*Num_MN, sizeof(double complex));
+	#define rho_av_mn(k,mn) rho_av_mn[(mn)*DMnZ+k]
+
+    // double *rho_av_mn_cos = (double *)calloc( DMnZ*Num_MN,sizeof(double));
+    // double *rho_av_mn_sin = (double *)calloc( DMnZ*Num_MN,sizeof(double));
+    // #define rho_av_mn_cos(k,mn) rho_av_mn_cos[(mn)*DMnZ+k]
+    // #define rho_av_mn_sin(k,mn) rho_av_mn_sin[(mn)*DMnZ+k]
+
+    for (int mn_index = 0; mn_index < Num_MN; mn_index++) {
+        int m = M_indices[mn_index];
+        int n = N_indices[mn_index];
+        for (int k = 0; k < DMnz; k++) {
+            ind_orig[2] = k;
+            for (int j = 0; j < DMny; j++) {
+                ind_orig[1] = j;
+                for (int i = 0; i < DMnx; i++) {
+                    ind_orig[0] = i;
+                    double a = ind_orig[dir_X] + pSPARC->DMVertices[2*dir_X]; // Global x numbering // double is actually required for implicit cast to float of m*a/NX
+                    double b = ind_orig[dir_Y] + pSPARC->DMVertices[2*dir_Y]; // Global y numbering // double is actually required for implicit cast to float of n*b/NY
+                    rho_av_mn(ind_orig[dir_Z],mn_index) += f(i,j,k) * cexp(I*2*M_PI*(a*m/NX+b*n/NY)) / (NXY*4*M_PI); // note here f = 4*pi* (rho + b)
+                    // rho_av_mn_cos(ind_orig[dir_Z],mn_index) += f(i,j,k) * cos(2*M_PI*(a*m/NX+b*n/NY)) / (NXY*4*M_PI); // note here f = 4*pi* (rho + b)
+                    // rho_av_mn_sin(ind_orig[dir_Z],mn_index) += f(i,j,k) * sin(2*M_PI*(a*m/NX+b*n/NY)) / (NXY*4*M_PI); // note here f = 4*pi* (rho + b)
+                }
+            }
+        }
+    }
+	
+    // Create sub-comm slices of the Cartesian topology
 	int remain_dims[3]; // which dimensions to keep
 	remain_dims[dir_X] = 1;
 	remain_dims[dir_Y] = 1;
@@ -2001,9 +2097,11 @@ void PartrialDipole_surface(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 	MPI_Cart_sub(pSPARC->dmcomm_phi, remain_dims, &XY_comm);
 
 	// sum over processors in the sub-slices in the X-Y plane
-	MPI_Allreduce(MPI_IN_PLACE, rho_av, DMnZ, MPI_DOUBLE, 
-		MPI_SUM, XY_comm);
-	
+	MPI_Allreduce(MPI_IN_PLACE, rho_av   , DMnZ       , MPI_DOUBLE        , MPI_SUM, XY_comm);
+    MPI_Allreduce(MPI_IN_PLACE, rho_av_mn, DMnZ*Num_MN, MPI_DOUBLE_COMPLEX, MPI_SUM, XY_comm);
+    // MPI_Allreduce(MPI_IN_PLACE, rho_av_mn_cos, DMnZ*Num_MN , MPI_DOUBLE   , MPI_SUM, XY_comm);
+    // MPI_Allreduce(MPI_IN_PLACE, rho_av_mn_sin, DMnZ*Num_MN , MPI_DOUBLE   , MPI_SUM, XY_comm);
+
 	//** evaluate P(0) = int_0^{LZ} rho_av(Z)*Z dZ **//
 	// find P0 locally
 	double P0 = 0.0;
@@ -2011,6 +2109,30 @@ void PartrialDipole_surface(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 		double Z = (k + pSPARC->DMVertices[2*dir_Z]) * dZ;
 		P0 += rho_av[k] * Z * dZ;
 	}
+
+    //** evaluate P_mn = int_0^{LZ} rho_av_mn(Z')*1/K_Norm_mn*exp(2*pi*sgn(z)*(Z'-LZ/2)*K_Norm_mn) dZ'  locally **//
+    // For positive z (   top surface), we store P_mn_positive
+    // For negative z (bottom surface), we store P_mn_negative
+    
+	double complex *P_mn_positive = (double complex*)calloc( Num_MN, sizeof(double complex));
+	double complex *P_mn_negative = (double complex*)calloc( Num_MN, sizeof(double complex));
+    // double *P_mn_cos_positive = (double*)calloc( Num_MN, sizeof(double));
+	// double *P_mn_cos_negative = (double*)calloc( Num_MN, sizeof(double));
+    // double *P_mn_sin_positive = (double*)calloc( Num_MN, sizeof(double));
+	// double *P_mn_sin_negative = (double*)calloc( Num_MN, sizeof(double));
+
+    for (int mn_index = 0; mn_index < Num_MN; mn_index++) {
+        double K = K_Norm_MN[mn_index];
+        for (int k = 0; k < DMnZ; k++) {
+            double Z = (k + pSPARC->DMVertices[2*dir_Z]) * dZ; // Globally ranges from 0 to LZ. Locally it is somewhere in between
+            P_mn_positive[mn_index] += rho_av_mn(k,mn_index) / K * exp(-2*M_PI*(LZ-Z)*K) * dZ;  // (LZ-Z) is the (positive) distance to the top boundary
+            P_mn_negative[mn_index] += rho_av_mn(k,mn_index) / K * exp(-2*M_PI*(Z   )*K) * dZ;  // (Z) is the (positive) distance to the bottom boundary
+            // P_mn_cos_positive[mn_index] += rho_av_mn_cos(k,mn_index) / K * exp(-2*M_PI*(LZ-Z)*K) * dZ;  // (LZ-Z) is the (positive) distance to the top boundary
+            // P_mn_cos_negative[mn_index] += rho_av_mn_cos(k,mn_index) / K * exp(-2*M_PI*(Z   )*K) * dZ;  // (Z) is the (positive) distance to the bottom boundary
+            // P_mn_sin_positive[mn_index] += rho_av_mn_sin(k,mn_index) / K * exp(-2*M_PI*(LZ-Z)*K) * dZ;  // (LZ-Z) is the (positive) distance to the top boundary
+            // P_mn_sin_negative[mn_index] += rho_av_mn_sin(k,mn_index) / K * exp(-2*M_PI*(Z   )*K) * dZ;  // (Z) is the (positive) distance to the bottom boundary
+        }
+    }
 
 	// create sub-communicators in the Z direction
 	remain_dims[dir_X] = 0;
@@ -2020,11 +2142,29 @@ void PartrialDipole_surface(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 	MPI_Cart_sub(pSPARC->dmcomm_phi, remain_dims, &Z_comm);
 
 	// sum over processors in the Z direction
-	MPI_Allreduce(MPI_IN_PLACE, &P0, 1, MPI_DOUBLE, 
-		MPI_SUM, Z_comm);
+	MPI_Allreduce(MPI_IN_PLACE, &P0           , 1     , MPI_DOUBLE        , MPI_SUM, Z_comm);
+	MPI_Allreduce(MPI_IN_PLACE,  P_mn_positive, Num_MN, MPI_DOUBLE_COMPLEX, MPI_SUM, Z_comm);
+	MPI_Allreduce(MPI_IN_PLACE,  P_mn_negative, Num_MN, MPI_DOUBLE_COMPLEX, MPI_SUM, Z_comm);
+    
+    // MPI_Allreduce(MPI_IN_PLACE,  P_mn_cos_positive, Num_MN, MPI_DOUBLE, MPI_SUM, Z_comm);
+    // MPI_Allreduce(MPI_IN_PLACE,  P_mn_cos_negative, Num_MN, MPI_DOUBLE, MPI_SUM, Z_comm);
+    // MPI_Allreduce(MPI_IN_PLACE,  P_mn_sin_positive, Num_MN, MPI_DOUBLE, MPI_SUM, Z_comm);
+    // MPI_Allreduce(MPI_IN_PLACE,  P_mn_sin_negative, Num_MN, MPI_DOUBLE, MPI_SUM, Z_comm);
 
-	MPI_Comm_free(&XY_comm);
+    MPI_Comm_free(&XY_comm);
 	MPI_Comm_free(&Z_comm);
+
+    #ifdef DEBUG
+        if (!rank){
+            printf("cos(alpha): %+.4f\n",cosAlpha);
+            printf("Number of (m,n) points: %d (x2+1).   k_norm_cutoff = % .8f [1/bohr]\n",Num_MN,K_Norm_Cutoff);
+            printf("(m,n) = (  0,  0) :    Pz = %+.8f[e*bohr]\n", P0);
+            for (int mn_index = 0; mn_index < Num_MN; mn_index++) {
+                printf("(m,n) = (%3d,%3d) :    k_norm = %.8f [1/bohr]   :   P_mn(+) = %+.8f%+.8fi [e*bohr]   :   P_mn(-) = %+.8f%+.8fi [e*bohr]\n", M_indices[mn_index], N_indices[mn_index], K_Norm_MN[mn_index], creal(P_mn_positive[mn_index]), cimag(P_mn_positive[mn_index]), creal(P_mn_negative[mn_index]), cimag(P_mn_negative[mn_index]));
+                // printf("(m,n) = (%3d,%3d) :    k_norm = %.8f [1/bohr]   :   P_mn(c+) = %+.8f   :   P_mn(s+) = %+.8f   :   P_mn(c-) = %+.8f   :   P_mn(s-) = %+.8f \n", M_indices[mn_index], N_indices[mn_index], K_Norm_MN[mn_index], P_mn_cos_positive[mn_index], P_mn_sin_positive[mn_index], P_mn_cos_negative[mn_index], P_mn_sin_negative[mn_index]);
+            }
+        }
+    #endif
 
 	int nbr_BCs[6];
 	nbr_BCs[0] = nbr_BCs[1] = pSPARC->BCx;
@@ -2074,13 +2214,18 @@ void PartrialDipole_surface(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 
 		// calculate electrostatic potential "phi" inside
 		double *phi = (double *)calloc( nd_phi , sizeof(double) );
-
+        
+        // printf("===== RANK = %d    : Boundary = %d    :    DMVertices = x in (%d,%d), y in (%d,%d), z in (%d,%d)    : i_phi = (%d,%d), j_phi = (%d,%d), k_phi = (%d,%d) \n",rank, nbr_i, pSPARC->DMVertices[0], pSPARC->DMVertices[1],pSPARC->DMVertices[2],pSPARC->DMVertices[3],pSPARC->DMVertices[4],pSPARC->DMVertices[5],is_phi,ie_phi,js_phi,je_phi,ks_phi,ke_phi);fflush(stdout);
+         
 		int count = 0;
 		for (int k = 0; k < nz_phi; k++) {
+            ind_orig[2] = k + ks_phi;
 			double z = (k + ks_phi) * pSPARC->delta_z; 
 			for (int j = 0; j < ny_phi; j++) {
+                ind_orig[1] = j + js_phi;
 				double y = (j + js_phi) * pSPARC->delta_y;
 				for (int i = 0; i < nx_phi; i++) {
+                    ind_orig[0] = i + is_phi;
 					double x = (i + is_phi) * pSPARC->delta_x;
 					double coords[3] = {x,y,z};
 					double Z = coords[dir_Z];
@@ -2088,9 +2233,35 @@ void PartrialDipole_surface(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 					// note: int_0^{Z_cell} rho_av(Z') dZ' = NetCharge/A_XY
 					double phi_av = -2.0 * M_PI * (pSPARC->NetCharge/A_XY*Z - P0);
 					if (Z <= 0.0) phi_av *= -1.0; 
+
+                    // add external electric field
+                    phi_av -= (Z - cellsizes[dir_Z]/2) * electricfield[dir_Z];
+
 					phi[count] = phi_av;
-					count++;
-				}
+
+                    // add high order terms
+                    // phi += exp(i*2*M_PI*( a*m/NX + b*n/NY ))*P_mn
+                    double a = ind_orig[dir_X]; // Global x numbering // double is actually required for implicit cast to float of m*a/NX
+                    double b = ind_orig[dir_Y]; // Global y numbering // double is actually required for implicit cast to float of n*b/NY
+                    
+                    double phi_highorder = 0.0;
+                    for (int mn_index = 0; mn_index < Num_MN; mn_index++) {
+                        int m = M_indices[mn_index];
+                        int n = N_indices[mn_index];
+                        if (Z > 0.0){
+                            phi_highorder += P_mn_positive[mn_index] * cexp(I*2*M_PI*(a*m/NX+b*n/NY)); // Since phi is double, the imaginary part is implicitly discarded
+                            // phi_highorder += P_mn_cos_positive[mn_index] * cos(2*M_PI*(a*m/NX+b*n/NY)); // Since phi is double, the imaginary part is implicitly discarded
+                            // phi_highorder += P_mn_sin_positive[mn_index] * sin(2*M_PI*(a*m/NX+b*n/NY)); // Since phi is double, the imaginary part is implicitly discarded
+                            } else {
+                            phi_highorder += P_mn_negative[mn_index] * cexp(I*2*M_PI*(a*m/NX+b*n/NY)); // Since phi is double, the imaginary part is implicitly discarded
+                            // phi_highorder += P_mn_cos_negative[mn_index] * cos(2*M_PI*(a*m/NX+b*n/NY)); // Since phi is double, the imaginary part is implicitly discarded
+                            // phi_highorder += P_mn_sin_negative[mn_index] * sin(2*M_PI*(a*m/NX+b*n/NY)); // Since phi is double, the imaginary part is implicitly discarded
+                        }
+                    }
+                    phi[count] += 2 * phi_highorder; // We multiply by 2 since (m,n) and (-m,-n) have same real contribution to phi, and only one of them is actually computed
+
+                    count++;
+                }
 			}
 		} 
 
@@ -2135,6 +2306,21 @@ void PartrialDipole_surface(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 		free(phi);
 	}
 	free(rho_av);
+    free(M_indices);
+    free(N_indices);
+    free(K_Norm_MN);
+    free(P_mn_positive);
+    free(P_mn_negative);
+    free(rho_av_mn);
+    // free(P_mn_cos_positive);
+    // free(P_mn_cos_negative);
+    // free(rho_av_mn_cos);
+    // free(P_mn_sin_positive);
+    // free(P_mn_sin_negative);
+    // free(rho_av_mn_sin);
+#undef rho_av_mn
+// #undef rho_av_mn_cos
+// #undef rho_av_mn_sin
 #undef d_cor
 #undef phi
 #undef f
@@ -2153,6 +2339,472 @@ void PartrialDipole_surface(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
  *          Note that this is only done in "phi-domain".
  */
 void PartrialDipole_wire(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
+	if (pSPARC->dmcomm_phi == MPI_COMM_NULL) return; 
+
+    int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    // printf("___ RANK (%3d) :   Starting wire \n", rank);
+    
+	int FDn = pSPARC->order / 2;
+	int DMnx = pSPARC->Nx_d;
+	int DMny = pSPARC->Ny_d;
+	int DMnz = pSPARC->Nz_d;
+	int DMnd = pSPARC->Nd_d;
+	int Nx = pSPARC->Nx;
+	int Ny = pSPARC->Ny;
+	int Nz = pSPARC->Nz;
+
+    // init correction to 0
+	for (int i = 0; i < DMnd; i++) d_cor[i] = 0.0; 
+
+    /* printf("\n___ printing f\n");
+    FILE *output_ff = fopen("f.sparc","w");
+    for (int i = 0; i < DMnd; i++) fprintf(output_ff,"%+.8f\n", f[i]);
+    fclose(output_ff);
+    printf("___ printed f\n\n");
+    */
+    // printf("___ RANK (%3d) :   initialize \n", rank);
+
+	// define the “correction domain” which contributes to the charge correction. i.e. 0 to FDn-1 and nx-FDn to nx-1 in each direction.
+    // define the “phi domain”        which contributes to the charge correction. i.e. -FDn to -1 and nx to FDn+nx-1 in each direction.
+	int  DMCorVert[6][6];
+    int DMVert_phi[6][6];
+
+     DMCorVert[0][0] =  DMCorVert[2][2] =  DMCorVert[4][4] =      0;
+     DMCorVert[0][1] =  DMCorVert[2][3] =  DMCorVert[4][5] =  FDn-1;
+	DMVert_phi[0][0] = DMVert_phi[2][2] = DMVert_phi[4][4] = -FDn  ;
+    DMVert_phi[0][1] = DMVert_phi[2][3] = DMVert_phi[4][5] =     -1;
+
+    DMCorVert[1][0] = Nx-FDn; DMCorVert[1][1] = Nx-1; DMVert_phi[1][0] = Nx; DMVert_phi[1][1] = FDn+Nx-1;
+    DMCorVert[3][2] = Ny-FDn; DMCorVert[3][3] = Ny-1; DMVert_phi[3][2] = Ny; DMVert_phi[3][3] = FDn+Ny-1;
+    DMCorVert[5][4] = Nz-FDn; DMCorVert[5][5] = Nz-1; DMVert_phi[5][4] = Nz; DMVert_phi[5][5] = FDn+Nz-1;
+
+    DMCorVert[2][0] = DMCorVert[3][0] = DMCorVert[4][0] = DMCorVert[5][0] = DMVert_phi[2][0] = DMVert_phi[3][0] = DMVert_phi[4][0] = DMVert_phi[5][0] = 0;
+    DMCorVert[0][2] = DMCorVert[1][2] = DMCorVert[4][2] = DMCorVert[5][2] = DMVert_phi[0][2] = DMVert_phi[1][2] = DMVert_phi[4][2] = DMVert_phi[5][2] = 0;
+    DMCorVert[0][4] = DMCorVert[1][4] = DMCorVert[2][4] = DMCorVert[3][4] = DMVert_phi[0][4] = DMVert_phi[1][4] = DMVert_phi[2][4] = DMVert_phi[3][4] = 0;
+
+    DMCorVert[2][1] = DMCorVert[3][1] = DMCorVert[4][1] = DMCorVert[5][1] = DMVert_phi[2][1] = DMVert_phi[3][1] = DMVert_phi[4][1] = DMVert_phi[5][1] = Nx-1;
+    DMCorVert[0][3] = DMCorVert[1][3] = DMCorVert[4][3] = DMCorVert[5][3] = DMVert_phi[0][3] = DMVert_phi[1][3] = DMVert_phi[4][3] = DMVert_phi[5][3] = Ny-1;
+    DMCorVert[0][5] = DMCorVert[1][5] = DMCorVert[2][5] = DMCorVert[3][5] = DMVert_phi[0][5] = DMVert_phi[1][5] = DMVert_phi[2][5] = DMVert_phi[3][5] = Nz-1;
+
+	// Find rho_av = int (rho + b) dZ
+	int gridsizes[3], DMsizes[3];
+	gridsizes[0] = pSPARC->Nx;
+	gridsizes[1] = pSPARC->Ny;
+	gridsizes[2] = pSPARC->Nz;
+	DMsizes[0] = DMnx;
+	DMsizes[1] = DMny;
+	DMsizes[2] = DMnz;
+    double cellsizes[3], meshsizes[3];
+	cellsizes[0] = pSPARC->range_x;
+	cellsizes[1] = pSPARC->range_y;
+	cellsizes[2] = pSPARC->range_z;
+	meshsizes[0] = pSPARC->delta_x;
+	meshsizes[1] = pSPARC->delta_y;
+	meshsizes[2] = pSPARC->delta_z;
+
+    double electricfield[3];
+    electricfield[0] = pSPARC->ElectricFieldX;
+    electricfield[1] = pSPARC->ElectricFieldY;
+    electricfield[2] = pSPARC->ElectricFieldZ;
+
+	// find Periodic direction and call it the Z direction
+	int dir_Z = (pSPARC->BCx == 0) ? 0 : (pSPARC->BCy == 0 ? 1 : 2);
+	int dir_X = (dir_Z + 1) % 3;
+	int dir_Y = (dir_X + 1) % 3;
+	
+	// once we find the direction, we assume that direction is the Z
+	// direction, the other two directions are then called X, Y
+	int NX = gridsizes[dir_X]; 
+	int NY = gridsizes[dir_Y]; 
+	int NZ = gridsizes[dir_Z];
+	// int NXY = NX * NY;
+	int DMnX = DMsizes[dir_X];
+	int DMnY = DMsizes[dir_Y];
+	// int DMnZ = DMsizes[dir_Z];
+	double LX = cellsizes[dir_X];  
+	double LY = cellsizes[dir_Y];  
+	double LZ = cellsizes[dir_Z];
+	double dX = meshsizes[dir_X]; 
+	double dY = meshsizes[dir_Y]; 
+
+	double LXY = min(LX,LY)/2.0;
+	// double dZ = meshsizes[dir_Z];
+	// double A_XY = LX * LY; // area of (X,Y) surface, neglecting the Jacobian
+
+    // Number of terms in the series
+    int NumM = pSPARC->L_MAX_1_Wire;
+    int NumN = pSPARC->L_MAX_2_Wire;
+
+    NumN = min(NumN,floor(NZ/2)); // The number of N terms is limited by the number of grid points along Z due to discrete FFT
+
+    int i0 = pSPARC->DMVertices[2*dir_X];
+    int j0 = pSPARC->DMVertices[2*dir_Y];
+    
+	int nbr_BCs[6];
+	nbr_BCs[0] = nbr_BCs[1] = pSPARC->BCx;
+	nbr_BCs[2] = nbr_BCs[3] = pSPARC->BCy;
+	nbr_BCs[4] = nbr_BCs[5] = pSPARC->BCz;
+
+    // Create sub-comm slices of the Cartesian topology
+	int remain_dims[3]; // which dimensions to keep
+	remain_dims[dir_X] = 1;
+	remain_dims[dir_Y] = 1;
+	remain_dims[dir_Z] = 0;
+	MPI_Comm XY_comm;
+	MPI_Cart_sub(pSPARC->dmcomm_phi, remain_dims, &XY_comm);
+
+	// Create sub-communicators in the Z direction
+	remain_dims[dir_X] = 0;
+	remain_dims[dir_Y] = 0;
+	remain_dims[dir_Z] = 1;
+	MPI_Comm Z_comm;
+	MPI_Cart_sub(pSPARC->dmcomm_phi, remain_dims, &Z_comm);
+
+
+    // printf("___ RANK (%3d) :   initialize finished\n", rank);
+
+    
+    #define d_cor(i,j,k) d_cor[(k)*DMnx*DMny+(j)*DMnx+(i)]
+    #define f(i,j,k) f[(k)*DMnx*DMny+(j)*DMnx+(i)]
+
+	// Find rho_av = int (rho + b) dZ / int (1) dZ
+	double *rho_av = (double *)calloc( sizeof(double), DMnX*DMnY);
+    #define rho_av(i,j) rho_av[DMnX*j+i]
+	
+    // Find rho_av_n = int (rho + b) * exp(i*2*M_PI*n*z/LZ) dZ / int (1) dZ
+	double complex *rho_av_n = (double complex *)calloc( sizeof(double complex), DMnX*DMnY*NumN);
+    #define rho_av_n(i,j,n) rho_av_n[DMnX*(DMnY*(n-1)+j)+i]
+
+	int ind_orig[3];
+	for (int k = 0; k < DMnz; k++) {
+		for (int j = 0; j < DMny; j++) {
+			for (int i = 0; i < DMnx; i++) {
+				ind_orig[0] = i;
+				ind_orig[1] = j;
+				ind_orig[2] = k;
+				int    i_new = ind_orig[dir_X];
+				int    j_new = ind_orig[dir_Y];
+				double k_new = ind_orig[dir_Z];
+
+                // The following lines consider rho_av valued only within a cylinder of radius LXY
+                // double X = (i_new + i0) * dX - LX/2.0; // centered
+                // double Y = (j_new + j0) * dY - LY/2.0; // centered
+                // double r = sqrt(X*X+Y*Y)/LXY;
+
+                // if (r <= 1){
+                    double f_value = f(i,j,k) / (NZ*4*M_PI); // note here f = 4*pi*(rho + b)
+                    
+                    rho_av(i_new,j_new) += f_value;
+
+                    // High order terms for Bessel part (n)
+                    for (int n = 1; n <= NumN; n++) {
+                        rho_av_n(i_new,j_new,n) = f_value * cexp(I*(2*M_PI*k_new*n)/(NZ*1.0));
+                    }
+                // }
+			}
+		}
+	}
+	MPI_Allreduce(MPI_IN_PLACE, rho_av  , DMnX*DMnY     , MPI_DOUBLE        , MPI_SUM, Z_comm);
+	MPI_Allreduce(MPI_IN_PLACE, rho_av_n, DMnX*DMnY*NumN, MPI_DOUBLE_COMPLEX, MPI_SUM, Z_comm);
+
+    /* printf("\n___ printing rho\n");
+    FILE *output_fr = fopen("rho.sparc","w");
+    for (int i = 0; i < DMnX*DMnY; i++) fprintf(output_fr,"%+.8f\n", rho_av[i]);
+    fclose(output_fr);
+    printf("___ printed rho\n\n"); */
+
+    /*printf("\n___ printing rho_n\n");
+    FILE *output_frn = fopen("rhoN.sparc","w");
+    for (int i = 0; i < DMnX*DMnY*NumN; i++) fprintf(output_frn,"%+.12f%+.12fi\n", creal(rho_av_n[i]), cimag(rho_av_n[i]));
+    fclose(output_frn);
+    printf("___ printed rho_n\n\n");
+    */
+
+    // evaluate Q total charge per area
+    // double Q = 0.0;
+
+    // evaluate Pm for transversal (log) part
+    double complex *Pm = (double complex *)calloc( sizeof(double complex), NumM);
+    #define Pm(m) Pm[m-1]
+
+    double X, Y, Z, r, theta;
+    for (int j = 0; j < DMnY; j++) {
+		for (int i = 0; i < DMnX; i++) {
+            X = (i + i0) * dX - LX/2.0; // centered
+            Y = (j + j0) * dY - LY/2.0; // centered
+
+
+            double val1 = rho_av(i,j) * dX * dY;
+            // Q += val1;
+            
+            r     = sqrt(X*X+Y*Y)/LXY; if (r==0) continue;
+            theta = atan2(Y,X);
+
+            for (int m = 1; m <= NumM; m++) {
+                Pm(m) += pow(r,m) * cexp(I*m*theta) * val1;
+            }
+        }
+    }
+
+	// MPI_Allreduce(MPI_IN_PLACE, &Q,    1, MPI_DOUBLE        , MPI_SUM, XY_comm);
+	MPI_Allreduce(MPI_IN_PLACE, Pm, NumM, MPI_DOUBLE_COMPLEX, MPI_SUM, XY_comm);
+
+    // printf("___ RANK (%3d) :   Pm computed\n", rank);
+    
+    #ifdef DEBUG
+        if (!rank){
+            // printf("Total charge [e/bohr^2]  : %+.12e\n", Q);
+            printf("Number of wire (m) points: %d (x2).\n",NumM);
+            for (int m = 1; m <= NumM; m++) {
+                printf("(m) = (%1d) :   P_m = %+.12f%+.12fi [a.u.]\n", m, creal(Pm(m)), cimag(Pm(m)));
+            }
+        }
+    #endif
+
+    // printf("___ RANK (%3d) :   Pm printed\n", rank);
+
+	// evaluate Qn(i,j) for the longitudinal-transversal (Bessel) part
+    double complex *Qn = (double complex *)calloc( sizeof(double complex), 2 * FDn * (NX+NY) * NumN);
+    double complex *Qn_face[6];
+    Qn_face[dir_X*2  ] = &Qn[0                 ];
+	Qn_face[dir_X*2+1] = &Qn[FDn*NumN* NY      ];
+	Qn_face[dir_Y*2  ] = &Qn[FDn*NumN* NY*2    ];
+	Qn_face[dir_Y*2+1] = &Qn[FDn*NumN*(NY*2+NX)];
+
+    #define Qn(i,j,n,face,stride_X,stride_Y) Qn_face[face][stride_X*(stride_Y*(n-1)+j)+i]
+    
+    if (NumN>0){
+        for (int nbr_i = 0; nbr_i < 6; nbr_i++) {
+            if (nbr_BCs[nbr_i] == 0) continue;
+            int Is_phi_full = DMVert_phi[nbr_i][dir_X*2];
+            int Ie_phi_full = DMVert_phi[nbr_i][dir_X*2+1];
+            int Js_phi_full = DMVert_phi[nbr_i][dir_Y*2];
+            int Je_phi_full = DMVert_phi[nbr_i][dir_Y*2+1];
+            int nX_phi_full = Ie_phi_full - Is_phi_full + 1;
+            int nY_phi_full = Je_phi_full - Js_phi_full + 1;
+
+            // if (!rank){
+            //     printf("**** Loop for Qn in face %d: %d x %d x %d x %d x %d\n",nbr_i,nY_phi_full,nX_phi_full,DMnY,DMnX,NumN);
+            // }
+
+            for (int j = 0; j < nY_phi_full; j++) {
+                double Y = (j+Js_phi_full) * dY;
+                for (int i = 0; i < nX_phi_full; i++) {
+                    double X = (i+Is_phi_full) * dX;
+                    for (int jp = 0; jp < DMnY; jp++) {
+                        double Yp = (jp + j0) * dY;
+                        for (int ip = 0; ip < DMnX; ip++) {
+                            double Xp = (ip + i0) * dX;
+
+                            double r = sqrt((X-Xp)*(X-Xp) + (Y-Yp)*(Y-Yp))/LZ;
+                            
+                            for (int n=1; n <= NumN; n++){
+                                // Qn(i,j,n,nbr_i,nX_phi_full,nY_phi_full) += BesselK0(2*M_PI*n*r) * rho_av_n(ip,jp,n) * dX*dY;
+                                Qn(i,j,n,nbr_i,nX_phi_full,nY_phi_full) += BesselK0(2*M_PI*n*r) * rho_av_n(ip,jp,n) * dX*dY;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+	MPI_Allreduce(MPI_IN_PLACE, Qn, 2*FDn*(NX+NY)*NumN, MPI_DOUBLE_COMPLEX, MPI_SUM, XY_comm);
+
+	MPI_Comm_free(&XY_comm);
+	MPI_Comm_free(&Z_comm);
+
+	// find correction contribution from each side (in Dirichlet BC side)
+	for (int nbr_i = 0; nbr_i < 6; nbr_i++) {
+		// skip if BC is periodic in this side
+		if (nbr_BCs[nbr_i] == 0) continue; 
+
+		int is = max(DMCorVert[nbr_i][0], pSPARC->DMVertices[0]);
+		int ie = min(DMCorVert[nbr_i][1], pSPARC->DMVertices[1]);
+		int js = max(DMCorVert[nbr_i][2], pSPARC->DMVertices[2]);
+		int je = min(DMCorVert[nbr_i][3], pSPARC->DMVertices[3]);
+		int ks = max(DMCorVert[nbr_i][4], pSPARC->DMVertices[4]);
+		int ke = min(DMCorVert[nbr_i][5], pSPARC->DMVertices[5]);
+		int nx_cor = ie - is + 1;
+		int ny_cor = je - js + 1;
+		int nz_cor = ke - ks + 1;
+		int nd_cor = nx_cor * ny_cor * nz_cor;
+		if (nd_cor <= 0) continue;
+
+        // printf("___ Face: %1d, (i,j,k) = (%d,%d)x(%d,%d)x(%d,%d)\n", nbr_i, is,ie,js,je,ks,ke);fflush(stdout);
+
+		// find the region of phi that have contribution to the correction domain
+		int is_phi = is, ie_phi = ie;
+		int js_phi = js, je_phi = je;
+		int ks_phi = ks, ke_phi = ke;
+        char fname[11];
+		switch (nbr_i) {
+			case 0:
+				is_phi = is - FDn; ie_phi = -1; strcpy(fname, "phi1.sparc"); break;
+			case 1:
+				is_phi = Nx; ie_phi = ie + FDn; strcpy(fname, "phi2.sparc"); break;
+			case 2:
+				js_phi = js - FDn; je_phi = -1; strcpy(fname, "phi3.sparc"); break;
+			case 3:
+				js_phi = Ny; je_phi = je + FDn; strcpy(fname, "phi4.sparc"); break;
+			case 4:
+				ks_phi = ks - FDn; ke_phi = -1; strcpy(fname, "phi5.sparc"); break;
+			case 5:
+				ks_phi = Nz; ke_phi = ke + FDn; strcpy(fname, "phi6.sparc"); break; 
+		}
+
+		int nx_phi = ie_phi - is_phi + 1;
+		int ny_phi = je_phi - js_phi + 1;
+		int nz_phi = ke_phi - ks_phi + 1;
+		int nd_phi = nx_phi * ny_phi * nz_phi;
+
+		// calculate electrostatic potential "phi" inside
+		double *phi = (double *)calloc( nd_phi , sizeof(double) );
+        #define phi(i,j,k) phi[nx_phi*(ny_phi*k+j)+i]
+
+		int nX_phi_full = DMVert_phi[nbr_i][dir_X*2+1] - DMVert_phi[nbr_i][dir_X*2] + 1;
+		int nY_phi_full = DMVert_phi[nbr_i][dir_Y*2+1] - DMVert_phi[nbr_i][dir_Y*2] + 1;
+
+        int inds[3];
+        double x, y, z;
+        double phi_ijk;
+		for (int k = 0; k < nz_phi; k++) {
+            inds[2] = k + ks_phi;
+            for (int j = 0; j < ny_phi; j++) {
+                inds[1] = j + js_phi;
+                for (int i = 0; i < nx_phi; i++) {
+                    inds[0] = i + is_phi;
+
+                    x = inds[0] * pSPARC->delta_x - pSPARC->range_x/2.0; // centered
+                    y = inds[1] * pSPARC->delta_y - pSPARC->range_y/2.0; // centered
+                    z = inds[2] * pSPARC->delta_z - pSPARC->range_z/2.0; // centered
+
+                    int I_phi_full = inds[dir_X] - DMVert_phi[nbr_i][dir_X*2];
+                    int J_phi_full = inds[dir_Y] - DMVert_phi[nbr_i][dir_Y*2];
+
+                    double coords[3]={x,y,z};
+                    r     = sqrt(coords[dir_X]*coords[dir_X]+coords[dir_Y]*coords[dir_Y])/LXY;
+                    theta = atan2(coords[dir_Y],coords[dir_X]);
+
+                    phi_ijk = 0.0; // Since phi_ijk is double, the imaginary part will be implicitly discarded
+                    // Transversal (log) part
+                    for (int m = 1; m <= NumM; m++) { 
+                        phi_ijk += 1.0 / (m*pow(r,m)) * cexp(-I*m*theta) * Pm(m);
+                    }
+                    
+                    // Longitudinal-transversal (Bessel) part
+                    for (int n=1; n <= NumN; n++){
+                        phi_ijk += 2*cexp(-I*2*M_PI*coords[dir_Z]*n/LZ) * Qn(I_phi_full,J_phi_full,n,nbr_i,nX_phi_full,nY_phi_full); 
+                    }
+                    phi_ijk *= 2;// Doubled since -n and +n terms and -m and +m terms have same real part
+
+                    // Zero-th term
+                    // phi_ijk -= 2 * log(r*LXY) * Q;
+
+                    // Add external electric field (transversal)
+                    phi_ijk -= coords[dir_X] * electricfield[dir_X]; // X direction
+                    phi_ijk -= coords[dir_Y] * electricfield[dir_Y]; // Y direction
+
+                    phi(i,j,k) += phi_ijk;
+
+                    // printf("%+.8f\n", inds[0], inds[1], inds[2], coords[0], coords[1], coords[2], phi(i,j,k)); fflush(stdout);
+
+                }
+            }
+		}
+
+        if (rank==0){
+            printf("\n___ printing phi\n");
+            FILE *output_fp = fopen(fname,"w");
+            for (int i = 0; i < nd_phi; i++) fprintf(output_fp,"%+.8f\n", phi[i]);
+            fclose(output_fp);
+            printf("___ printed phi\n\n");
+        }
+
+		// calculate the correction "d_cor"
+		for (int k = ks; k <= ke; k++) {
+			int k_phi = k - ks_phi, k_DM = k - pSPARC->DMVertices[4];
+			for (int j = js; j <= je; j++) {
+				int j_phi = j - js_phi, j_DM = j - pSPARC->DMVertices[2];
+				for (int i = is; i <= ie; i++) {
+					int i_phi = i - is_phi, i_DM = i - pSPARC->DMVertices[0];
+					for (int p = 1; p <= FDn; p++) {
+						switch (nbr_i) {
+							case 0:
+								if ((i-p) < 0) 
+									d_cor(i_DM,j_DM,k_DM) -= pSPARC->D2_stencil_coeffs_x[p] * phi(i_phi-p,j_phi,k_phi);
+								break;
+							case 1:
+								if ((i+p) >= Nx) 
+									d_cor(i_DM,j_DM,k_DM) -= pSPARC->D2_stencil_coeffs_x[p] * phi(i_phi+p,j_phi,k_phi);
+								break;
+							case 2:
+								if ((j-p) < 0) 
+									d_cor(i_DM,j_DM,k_DM) -= pSPARC->D2_stencil_coeffs_y[p] * phi(i_phi,j_phi-p,k_phi);
+								break;
+							case 3:
+								if ((j+p) >= Ny) 
+									d_cor(i_DM,j_DM,k_DM) -= pSPARC->D2_stencil_coeffs_y[p] * phi(i_phi,j_phi+p,k_phi);
+								break;
+							case 4:
+								if ((k-p) < 0) 
+									d_cor(i_DM,j_DM,k_DM) -= pSPARC->D2_stencil_coeffs_z[p] * phi(i_phi,j_phi,k_phi-p);
+								break;
+							case 5:
+								if ((k+p) >= Nz) 
+									d_cor(i_DM,j_DM,k_DM) -= pSPARC->D2_stencil_coeffs_z[p] * phi(i_phi,j_phi,k_phi+p);
+								break;
+						}
+					}
+
+                // printf("%+02d\t%+02d\t%+02d\t%+.4f\t%+.4f\t%+.4f\t%+.8f\n", i, j, k, x, y, z, d_cor(i_DM,j_DM,k_DM));
+                // printf("%+.8f\n", d_cor(i_DM,j_DM,k_DM));
+
+				}
+			}
+		}
+		free(phi);
+
+        // printf("\n___ printing dcor\n");
+	    // for (int i = 0; i < DMnd; i++) printf("%+.8f\n", d_cor[i]);
+        // printf("___ printed dcor\n\n");
+
+    }
+
+    /* if (rank==0){
+        printf("\n___ printing d_cor\n");
+        FILE *output_fd = fopen("d_cor.sparc","w");
+        for (int i = 0; i < DMnd; i++) fprintf(output_fd,"%+.8f\n", d_cor[i]);
+        fclose(output_fd);
+        printf("___ printed d_cor\n\n");
+    } */
+    
+	free(rho_av);
+	free(rho_av_n);
+	free(Pm);
+	free(Qn);
+#undef d_cor
+#undef phi
+#undef f
+#undef rho_av
+#undef rho_av_n
+#undef Pm
+#undef Qn
+}
+
+/**  TO BE DELETED
+ * @brief   Use partial dipole to correct boundary condition for the poisson equation
+ *                                      -D2 phi(x) = f.
+ *          with periodic BCs in 1 directions, and Dirichlet BC in the other two directions (wire).
+ *          So that when discretized in finite difference with Dirichlet BC, the equation will be
+ *                                  - DiscreteLaplacian phi = f - d.
+ *          It is required that f decays to zero on the Dirichlet boundary.
+ *
+ *          Note that this is only done in "phi-domain".
+ */
+
+void PartrialDipole_wire_old(SPARC_OBJ *pSPARC, double *f, double *d_cor) { 
 #define d_cor(i,j,k) d_cor[(k)*DMnx*DMny+(j)*DMnx+(i)]
 #define f(i,j,k) f[(k)*DMnx*DMny+(j)*DMnx+(i)]
 #define phi(i,j,k) phi[(k)*nx_phi*ny_phi+(j)*nx_phi+(i)]
@@ -2180,7 +2832,7 @@ void PartrialDipole_wire(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 	// init correction to 0
 	for (int i = 0; i < DMnd; i++) d_cor[i] = 0.0; 
 
-	//** Find rho_av = int (rho + b) dZ **//
+	// Find rho_av = int (rho + b) dZ
 	int gridsizes[3], DMsizes[3];
 	gridsizes[0] = pSPARC->Nx;
 	gridsizes[1] = pSPARC->Ny;
@@ -2263,7 +2915,13 @@ void PartrialDipole_wire(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 	MPI_Allreduce(MPI_IN_PLACE, rho_av, DMnX*DMnY, MPI_DOUBLE, 
 		MPI_SUM, Z_comm);
 	
-	//** evaluate V_av(X,Y) = int rho_av(X,Y)*ln((X-X')^2+(Y-Y')^2) dX'dY' **//
+    printf("\n___ printing rho\n");
+    FILE *output_fr = fopen("rhoQ.sparc","w");
+    for (int i = 0; i < DMnX*DMnY; i++) fprintf(output_fr,"%+.8f\n", rho_av[i]);
+    fclose(output_fr);
+    printf("___ printed rho\n\n");
+
+	// Evaluate V_av(X,Y) = int rho_av(X,Y)*ln((X-X')^2+(Y-Y')^2) dX'dY'
 	double *V_av =  (double *)calloc(2 * FDn * (NX+NY), sizeof(double));
 	double *V_av_nbr[6];
 	V_av_nbr[dir_X*2]   = &V_av[0];
@@ -2346,19 +3004,22 @@ void PartrialDipole_wire(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 		int nd_cor = nx_cor * ny_cor * nz_cor;
 		if (nd_cor <= 0) continue;
 
+        printf("___ Face: %1d, (i,j,k) = (%d,%d)x(%d,%d)x(%d,%d)\n", nbr_i, is,ie,js,je,ks,ke);fflush(stdout);
+
 		// find the region of phi that have contribution to the correction domain
 		int is_phi = is, ie_phi = ie;
 		int js_phi = js, je_phi = je;
 		int ks_phi = ks, ke_phi = ke;
+		char fname[12];
 		switch (nbr_i) {
 			case 0:
-				is_phi = is - FDn; ie_phi = -1; break;
+				is_phi = is - FDn; ie_phi = -1; strcpy(fname, "phi1Q.sparc"); break;
 			case 1:
-				is_phi = Nx; ie_phi = ie + FDn; break;
+				is_phi = Nx; ie_phi = ie + FDn; strcpy(fname, "phi2Q.sparc"); break;
 			case 2:
-				js_phi = js - FDn; je_phi = -1; break;
+				js_phi = js - FDn; je_phi = -1; strcpy(fname, "phi3Q.sparc"); break;
 			case 3:
-				js_phi = Ny; je_phi = je + FDn; break;
+				js_phi = Ny; je_phi = je + FDn; strcpy(fname, "phi4Q.sparc"); break;
 			case 4:
 				ks_phi = ks - FDn; ke_phi = -1; break;
 			case 5:
@@ -2386,6 +3047,12 @@ void PartrialDipole_wire(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 				}
 			}
 		}
+
+        printf("\n___ printing phi\n");
+		FILE *output_fp = fopen(fname,"w");
+	    for (int i = 0; i < nd_phi; i++) fprintf(output_fp,"%+.8f\n", phi[i]);
+        fclose(output_fp);
+        printf("___ printed phi\n\n");
 
 		// calculate the correction "d_cor"
 		for (int k = ks; k <= ke; k++) {
@@ -2422,10 +3089,17 @@ void PartrialDipole_wire(SPARC_OBJ *pSPARC, double *f, double *d_cor) {
 								break;
 						}
 					}
+                
+                // printf("%+.8f\n", d_cor(i_DM,j_DM,k_DM));
+
 				}
 			}
 		}
 		free(phi);
+
+        // printf("\n___ printing dcor\n");
+	    // for (int i = 0; i < DMnd; i++) printf("%+.8f\n", d_cor[i]);
+        // printf("___ printed dcor\n\n");
 	}
 	free(rho_av);
 	free(V_av);

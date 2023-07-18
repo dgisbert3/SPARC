@@ -83,13 +83,13 @@ void Calculate_electronicGroundState(SPARC_OBJ *pSPARC) {
         else
             SCF_ind = 1;
         if (pSPARC->REFERENCE_CUTOFF > 0.5*nn) {
-            printf("\nWARNING: REFERENCE _CUFOFF (%.6f Bohr) > 1/2 nn (nearest neighbor) distance (%.6f Bohr) in SCF#%d\n",
+            printf("\nWARNING: REFERENCE _CUTOFF (%.6f Bohr) > 1/2 nn (nearest neighbor) distance (%.6f Bohr) in SCF#%d\n",
                         pSPARC->REFERENCE_CUTOFF, 0.5*nn,  SCF_ind);
         }
         if (pSPARC->REFERENCE_CUTOFF < pSPARC->delta_x ||
             pSPARC->REFERENCE_CUTOFF < pSPARC->delta_y ||
             pSPARC->REFERENCE_CUTOFF < pSPARC->delta_z ) {
-            printf("\nWARNING: REFERENCE _CUFOFF (%.6f Bohr) < MESH_SPACING (dx %.6f Bohr, dy %.6f Bohr, dz %.6f Bohr) in SCF#%d\n",
+            printf("\nWARNING: REFERENCE _CUTOFF (%.6f Bohr) < MESH_SPACING (dx %.6f Bohr, dy %.6f Bohr, dz %.6f Bohr) in SCF#%d\n",
                         pSPARC->REFERENCE_CUTOFF, pSPARC->delta_x, pSPARC->delta_y, pSPARC->delta_z, SCF_ind );
         }
     }
@@ -179,6 +179,21 @@ void Calculate_electronicGroundState(SPARC_OBJ *pSPARC) {
         fprintf(output_fp,"Maximum force                      :%18.10E (Ha/Bohr)\n",maxF);
         fprintf(output_fp,"Time for force calculation         :  %.3f (sec)\n",t2-t1);
         fclose(output_fp);
+    }
+
+    // Print electrostatics
+    if(pSPARC->PrintElectrostaticsFlag == 1 && pSPARC->Verbosity){
+        double Pz = calculate_PolarizationZ(pSPARC);
+        if (!rank) {
+            output_fp = fopen(pSPARC->OutFilename,"a");
+            if (output_fp == NULL) {
+                printf("\nCannot open file \"%s\"\n",pSPARC->OutFilename);
+                exit(EXIT_FAILURE);
+            }
+            fprintf(output_fp,"Electric field Z                   :%18.10E (Ha/e/Bohr)\n", pSPARC->ElectricFieldZ);
+            fprintf(output_fp,"Polarization Z (per unit area)     :%18.10E (e/Bohr)\n", Pz);
+            fclose(output_fp);
+        }
     }
     
     // Calculate Stress and pressure
@@ -518,6 +533,10 @@ void scf(SPARC_OBJ *pSPARC)
     int i;
     // solve the poisson equation for electrostatic potential, "phi"
     Calculate_elecstPotential(pSPARC);
+
+    #ifdef DEBUG                                         // DEBUG E1+E2: Electrostatic energy
+    Calculate_Free_Energy(pSPARC, pSPARC->electronDens); // DEBUG E1+E2: Electrostatic energy
+    #endif                                               // DEBUG E1+E2: Electrostatic energy
 
     #ifdef DEBUG
     t1 = MPI_Wtime();
@@ -1267,4 +1286,107 @@ void TransferDensity(SPARC_OBJ *pSPARC, double *rho_send, double *rho_recv)
     t2 = MPI_Wtime();
     if (rank == 0) printf("rank = %d, D2D took %.3f ms\n", rank, (t2-t1)*1e3);
 #endif
+}
+
+
+/**
+ * @brief   Calculate polarization in Z direction
+ */
+double calculate_PolarizationZ(SPARC_OBJ *pSPARC)
+{   
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    
+	int DMnX = pSPARC->Nx_d;
+	int DMnY = pSPARC->Ny_d;
+	int DMnZ = pSPARC->Nz_d;
+    int DMnd = pSPARC->Nd_d;
+
+    double *f = (double *)calloc( DMnd, sizeof(double));
+    for (int i = 0; i < DMnd; i++) {
+        f[i] = (pSPARC->psdChrgDens[i] + pSPARC->electronDens[i]); // rho + b
+	}
+    
+    #define f(i,j,k) f[(k)*DMnX*DMnY+(j)*DMnX+(i)]
+
+    double EFx = pSPARC->ElectricFieldX;
+    double EFy = pSPARC->ElectricFieldY;
+    double EFz = pSPARC->ElectricFieldZ;
+
+	//** Find rho_av = int (rho + b) dXdY **//
+
+	int NX = pSPARC->Nx; 
+	int NY = pSPARC->Ny; 
+	int NZ = pSPARC->Nz;
+	int NXY = NX * NY;
+
+	double LX = pSPARC->range_x;
+	double LY = pSPARC->range_y;
+	double LZ = pSPARC->range_z;
+	double dX = pSPARC->delta_x;
+	double dY = pSPARC->delta_y;
+	double dZ = pSPARC->delta_z;
+
+	// Find rho_avZ = int (rho + b) dXdY / int (1) dXdY locally
+    double *rho_avZ = (double *)calloc( DMnZ , sizeof(double));
+
+	// first find sum
+	for (int k = 0; k < DMnZ; k++) {
+		for (int j = 0; j < DMnY; j++) {
+			for (int i = 0; i < DMnX; i++) {
+				rho_avZ[k] += f(i,j,k);
+			}
+		}
+	}
+
+    free(f);
+    #undef f
+
+	// find average, note here we assume mesh is uniform, otherwise
+	// use rho_avZ = int (rho + b) dXdY / int (1) dXdY
+	for (int k = 0; k < DMnZ; k++) {
+		rho_avZ[k] /= NXY;
+	}
+
+	// Create sub-comm slices of the Cartesian topology
+	int remain_dims[3]; // which dimensions to keep
+	remain_dims[0] = 1;
+	remain_dims[1] = 1;
+	remain_dims[2] = 0;
+
+	MPI_Comm XY_comm;
+	MPI_Cart_sub(pSPARC->dmcomm_phi, remain_dims, &XY_comm);
+
+	// sum over processors in the sub-slices in the X-Y plane
+	MPI_Allreduce(MPI_IN_PLACE, rho_avZ, DMnZ, MPI_DOUBLE, 
+		MPI_SUM, XY_comm);
+	
+	//** evaluate Pz = int_0^{LZ} rho_avZ(Z)*Z dZ **//
+	// find Pz locally
+	double Pz = 0.0;
+	for (int k = 0; k < DMnZ; k++) {
+		// double Z = (k + pSPARC->DMVertices[2*dir_Z]) * dZ;
+		double Z = (k + pSPARC->DMVertices[4]) * dZ;
+		Pz += rho_avZ[k] * Z * dZ;
+	}
+
+	// create sub-communicators in the Z direction
+	remain_dims[0] = 0;
+	remain_dims[1] = 0;
+	remain_dims[2] = 1;
+	MPI_Comm Z_comm;
+	MPI_Cart_sub(pSPARC->dmcomm_phi, remain_dims, &Z_comm);
+
+	// sum over processors in the Z direction
+	MPI_Allreduce(MPI_IN_PLACE, &Pz, 1, MPI_DOUBLE, 
+		MPI_SUM, Z_comm);
+
+	MPI_Comm_free(&XY_comm);
+	MPI_Comm_free(&Z_comm);
+
+	// normalize by area
+	// double AreaXY = LX * LY * pSPARC->Jacbdet;  // Assuming Z direction is orthogonal to plane XY
+	// Pz /= AreaXY;
+    free(rho_avZ);
+    return Pz;
 }

@@ -107,6 +107,7 @@ void PartrialDipole_surface(SPARC_OBJ *pSPARC, double *f, double *d_cor);
  *          Note that this is only done in "phi-domain".
  */
 void PartrialDipole_wire(SPARC_OBJ *pSPARC, double *f, double *d_cor);
+void PartrialDipole_wire_old(SPARC_OBJ *pSPARC, double *f, double *d_cor); // to be deleted
 
 
 

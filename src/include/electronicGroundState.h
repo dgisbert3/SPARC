@@ -22,6 +22,13 @@
  */
 void Calculate_electronicGroundState(SPARC_OBJ *pSPARC);
 
+/**
+ * @brief Calculate polarization Z
+ * 
+ * @param pSPARC 
+ * @return double 
+ */
+double calculate_PolarizationZ(SPARC_OBJ *pSPARC);
 
 /**
  * @brief   Calculate electronic ground state electron density and energy 
