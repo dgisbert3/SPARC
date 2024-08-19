@@ -100,7 +100,7 @@ void printElecDens(SPARC_OBJ *pSPARC) {
             b, pSPARC->dmcomm_phi, sdims, recv_comm, rdims, pSPARC->dmcomm_phi, sizeof(double));
         
         D2D(&d2d_sender, &d2d_recvr, gridsizes, pSPARC->DMVertices, pSPARC->elecstPotential, rDMVert, 
-            b, pSPARC->dmcomm_phi, sdims, recv_comm, rdims, pSPARC->dmcomm_phi);
+            b, pSPARC->dmcomm_phi, sdims, recv_comm, rdims, pSPARC->dmcomm_phi, sizeof(double));
 
         // free D2D targets
         Free_D2D_Target(&d2d_sender, &d2d_recvr, pSPARC->dmcomm_phi, recv_comm);

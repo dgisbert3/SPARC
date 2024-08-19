@@ -1357,6 +1357,9 @@ double calculate_PolarizationZ(SPARC_OBJ *pSPARC)
 	// Pz /= AreaXY;
     free(rho_avZ);
     return Pz;
+}
+
+/**
  * @brief   Calculate magnetization of atoms
  */
 void CalculateAtomMag(SPARC_OBJ *pSPARC)
