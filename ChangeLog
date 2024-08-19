@@ -3,6 +3,378 @@
 -Name
 -changes
 
+--------------
+August 16, 2024
+Name: Abhiraj Sharma
+Changes: initialization.c, eigenSolver.c, eigenSolverKpt.c, include/isddft.h
+1. Added hooks for HIP code
+
+--------------
+August 15, 2024
+Name: Shashikant Kumar
+Changes: doc/
+1. Add cyclix mlff phonon paper in the Manual_mlff
+
+--------------
+August 11, 2024
+Name: Shashikant Kumar
+Changes: (mlff/, cyclix/, highT/, readfiles.c, initialization.c, md.c, tests/)
+1. Add on-the-fly MLFF MD feature
+2. Add SOAP descriptor
+3. Enable running MLFF-MD from a trained model, restart of on-the-fly MLFF model
+4. Enable MLFF for orthogonal, non-orthogonal unit cells
+5. Enable MLFF for all boundary conditions including cyclix
+6. Internal energy model based on linear regression
+7. Added MLFF manual
+8. Added MLFF tests
+9. Put tests for mlff, highT, and xc (mgga, exx, vdW) in separate folders in tests
+
+
+--------------
+June 24, 2024
+Name: Xin Jing
+Changes: (initialization.c, xc/exx/exxInitialization.c)
+1. Fix a bug in minimal rho tolerance when calculating xc term
+2. change estimation of Ecut in exact exchange for auxiliary function method
+
+--------------
+Jan 27, 2023
+Name: Xin Jing
+Changes: (initialization.c)
+1. Fix a bug when the cell is a rotated cuboidal, use non-orthogonal calculation for that
+2. Add the warning for user to change the cell to get best performance
+3. Add warnings into .out file
+4. Remove SCF scriteria for QE and add warnings.
+
+--------------
+Oct 31, 2023
+Name: Boqin Zhang
+Changes: (md.c)
+1. Add NPT_SCALE_CONSTRAINTS
+
+--------------
+Oct 28, 2023
+Name: Xin Jing
+Changes: (energy.c)
+1. Fix a bug in defining type of woccfac
+
+--------------
+Oct 19, 2023
+Name: Shashikant Kumar
+Changes: (doc/)
+1. Updated the Manual in doc folder
+
+--------------
+Sep 27, 2023
+Name: Xin Jing
+Changes: (xc/exx/exactExchangeEnergyDensity.c)
+1. Fix a bug in printing exact exchange energy densities 
+
+--------------
+Sep 26, 2023
+Name: Xin Jing
+Changes: (eigenSolver.c, cyclix/)
+1. Enable cyclix with DP only and update 1 test
+
+--------------
+Sep 23, 2023
+Name: Xin Jing
+Changes: (eigenSolver.c, eigenSolverKpt.c, force.c, stress.c, pressure.c)
+1. changes for GPU hooks
+2. fix bug in exact exchange energy density
+
+--------------
+Sep 22, 2023
+Name: Qimen Xu, Ziao Tang, Yu Zhang
+Changes: (eigenSolver.c, electronicGroundState.c, initialization.c, occupation.c, orbitalElecDensInit.c, printing.c, readfiles.c, isddft.h, readfiles.h, utils/)
+1. Add band structure calculation feature.
+2. Add `readDens_cube` routine for reading input density file.
+3. Fix memory leak issues:
+(a) when ixc[2] is nonzero, countPotentialCalculate is not initialized,
+(b) EigenFilename is not initialized on processes with rank > 0.
+4. Add a python script in `utils/` for processing `.eigen` files and visualizing the band structure of a given system.
+
+--------------
+Sep 18, 2023
+Name: Xin Jing
+Changes: (highT/)
+1. Distinguishing between SPARC and dev_SPARC
+2. Change a few spin tests to include NP_SPIN_PARAL: 1
+3. Fix a bug in initial electron density and magnetization
+
+--------------
+Sep 08, 2023
+Name: Xin Jing
+Changes: (highT/)
+1. Add GPU hook for SQ 
+
+--------------
+Sep 06, 2023
+Name: Tian Tian
+Changes: (README.md, doc/)
+1. Add installation instruction for conda-forge
+2. Update the installation section in manual
+
+--------------
+Sep 05, 2023
+Name: Xin Jing
+Changes: (all files)
+1. integrate spin and spinor wave function cases for eigen solver, xc, force, stress, etc
+2. clean and merge duplicate code
+3. update references with 1E-5 tolerance
+4. add implementation of noncollinear spin
+5. change rhoTrigger defualt number
+6. calculate and print magnetization of each atom
+7. fix default of Nstates
+8. add testsuites for noncollinear spin
+9. update documentation
+10. change functions for printing density and orbital
+
+--------------
+Aug 15, 2023
+Name: Boqin Zhang
+Changes: (md.c)
+1. Add missed headfile readfiles.h into md.c
+
+--------------
+Aug 01, 2023
+Name: Boqin Zhang
+Changes: (exchangeCorrelation.c, xc/mgga/, md.c)
+1. Add rscan metaGGA functional
+2. Remove vdWDFflag and mGGAflag. Replaced by ixc[2], ixc[3]
+3. Fix the bug in calculating minimum distance in md.c
+
+--------------
+Jul 10, 2023
+Name: Boqin Zhang
+Changes: (exchangeCorrelation.c, xc/mgga/)
+1. Add r2scan metaGGA functional
+
+--------------
+Jun 26, 2023
+Name: Xin Jing, Boqin Zhang
+Changes: (exchangeCorrelation.c, xc\)
+1. Decompose exchange correlation functions
+
+--------------
+Jun 23, 2023
+Name: Xin Jing
+Changes: (all files)
+1. Release cyclix with SOC
+2. Add tests in testsuite
+3. Add cyclix documentation
+4. Enable print 2-spinor orbital
+
+--------------
+May 11, 2023
+Name: Boqin Zhang
+Changes: (initialization.c)
+1. Add error message for using SCAN with NLCC pseudopotential
+
+--------------
+Apr 26, 2023
+Name: Boqin Zhang
+Changes: (doc\)
+1. Modify the first 4 pages of Manual
+
+--------------
+Apr 19, 2023
+Name: Xin Jing
+Changes: (forces.c, stress.c, pressure.c, electronDensity.c, etc)
+1. Switch from MPI_Reduce to MPI_Allreduce for avoiding unexpected MPI internal bug.
+2. The bug happens when doing MPI_Reduce over processors from different nodes on cluster. 
+
+--------------
+Apr 14, 2023
+Name: Xin Jing
+Changes: (initialization.c )
+1. Fix a few compile warnings
+
+--------------
+Apr 11, 2023
+Name: Xin Jing
+Changes: (eigenSolver.c, eigenSolverKpt.c)
+1. Chane SPARCX_ACCEL flag
+
+--------------
+Apr 10, 2023
+Name: Boqin Zhang
+Changes: (xc/vdW/vdWDF/vdWDFparallelization.c, vdWDFnonlinearCorre.c)
+1. Add number of process confinement from FFT on zAxis communicator
+2. Remove redundant functions in FFT
+3. Remove warnings in vdWDF
+
+--------------
+Apr 08, 2023
+Name: Xin Jing
+Changes: (initialization.c)
+1. Change the default SCF tolerance for 1E-5 Ha/atom energy accuracy in single point calculation.
+2. Change the default SCF tolerance for 1E-3 Ha/bohr force accuracy in MD context.
+3. Change the default SCF tolerance for TOL_RELAX/5 Ha/bohr force accuracy in relaxation context.
+4. Update documentation.
+
+--------------
+Apr 03, 2023
+Name: Boqin Zhang
+Changes: (xc/vdW/vdWDF/vdWDFparallelization.c)
+1. Remove a warning message
+
+--------------
+Mar 31, 2023
+Name: Xin Jing
+Changes: (initialization.c, eigenSolver.c, eigenSolver_kpt.c)
+1. Restore correct memory estimation which is accidently deleted before
+2. change variable name to make it consistent
+
+--------------
+Mar 31, 2023
+Name: Boqin Zhang
+Changes: (xc/vdW/vdWDF/vdWDFparallelization.c, md.c)
+1. Fix the problem of MKL FFT returning negative LengthK
+2. Print Hamiltonian in .aimd file
+
+--------------
+Mar 26, 2023
+Name: Boqin Zhang
+Changes: (initialization.c, readfiles.c, xc/vdW/vdWDF/)
+1. Rewrite parallel FFT in vdWDF
+2. Remove vdWDF kernel generation function, replaced by read kernel
+
+--------------
+Feb 24, 2023
+Name: Xin Jing
+Changes: (all files)
+1. Change double complex to double _Complex
+1. Add GPU hook
+2. Make eigenSolver.c and eigenSolverKpt.c consistent with dev_SPARC
+3. Add STANDARD_EIGEN input option
+
+--------------
+Feb 22, 2023
+Name: Xin Jing
+Changes: (orbitalElecDensInit.c)
+1. Fix bug in initialization of orbitals when FIX_RAND is on
+
+--------------
+Feb 21, 2023
+Name: Xin Jing
+Changes: (readfiles.c, initialization.c)
+1. Remove warning for CALC_PRES
+2. Add system information in cube file.
+
+--------------
+Feb 19, 2023
+Name: Xin Jing
+Changes: (highT/)
+1. Rewrite the nodal Hamiltonian times vector routines
+2. Rewrite 3-dimensional arrays into 1-dimensional arrays
+3. Test Gauss method for force and stress at both high T (1E6 K) and low T (1E4 K)
+4. Remove Cleanshaw-Curtis method for force and stress
+5. Optimize the code to get around 1.5 ~ 2 times speedup compared to previous version 
+6. Move SQ files to highT/ folder
+7. Reorganize functions in finalization.c
+8. Put SQ documentation into separate file 
+9. Update SQ tests in testsuits
+
+
+--------------
+Feb 13, 2023
+Name: Xin Jing
+Changes: (printing.c)
+1. Fix bug in printing cartesian coordinates in .dens files
+
+--------------
+Feb 12, 2023
+Name: Xin Jing
+Changes: (initialization.c)
+1. Always print atomic mass in .out file
+
+--------------
+Feb 07, 2023
+Name: Xin Jing
+Changes: (initialization.c, readfiles.c)
+1. Add density in .out file
+
+--------------
+Feb 06, 2023
+Name: Shashikant Kumar
+Changes: (psps/, tests/)
+1. Updated SPMS pseudopotentials
+2. Update testsuite
+
+--------------
+Feb 03, 2023
+Name: Xin Jing
+Changes: (initialization.c)
+1. Change rounding convenction of mesh size to use ceil rather than round
+2. Update testsuite
+
+
+--------------
+Jan 29, 2023
+Name: Xin Jing, Shashikant Kumar
+Changes: (readfiles.c, initialization.c)
+1. change r_core from value in pseudopotential file to actual r where projectors are below < 1E-8
+2. Update testsuite
+
+
+--------------
+Jan 25, 2023
+Name: Xin Jing, Shashikant Kumar
+Changes: (electrostatic.c, initialization.c)
+1. Change the pseudocharge rb upper bound and the default TOL_PSEUDOCHARGE to 1E-3 * TOL_SCF
+2. Update testsuite and documentation
+
+
+--------------
+Dec 19, 2022
+Name: Boqin Zhang
+Changes: (md.c)
+1. Fix a bug in NPT restart code
+
+
+--------------
+Nov 23, 2022
+Name: Boqin Zhang
+Changes: (xc/mgga/)
+1. Change the name of all files in xc/mgga/ folder into mGGA*.c and mGGA*.h
+2. Combine mGGAscan.c and mGGASscan.c together
+
+
+--------------
+Nov 22, 2022
+Name: Shashikant Kumar
+Changes: (psps/)
+1. Updated the SPMS pseudopotential (with new citation)
+
+
+--------------
+Nov 21, 2022
+Name: Qimen Xu
+Changes: (stress.c, electronicGrountState.c)
+1. Print stress in GPa for slabs and wires.
+
+
+--------------
+Nov 19, 2022
+Name: Xin Jing
+Changes: (initialization.c)
+1. Change default MINIT_SCF to 2
+
+
+--------------
+Nov 18, 2022
+Name: Xin Jing
+Changes: (initialization.c, xc/exx/exactExchange.c)
+1. Fix the issue in hybrid outer loop for creating ACE operator for additional time
+2. Update testsuite
+
+
+--------------
+Nov 17, 2022
+Name: Boqin Zhang
+Changes: (mgga/MGGAstress.c)
+1. Fix a memory bug in calculating meta-GGA stress term
 
 --------------
 Nov 11, 2022

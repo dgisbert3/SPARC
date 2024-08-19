@@ -50,20 +50,87 @@ void find_element(char element[8], char *atom_type)
         memcpy(element, str, pch-str);
         element[pch-str] = '\0';
     } else {
-        // strncpy( element, str, min(sizeof(element)+1,strlen(str)) );
         strncpy( element, str, 8 );
     }
 }
 
+
+/**
+ * @brief Read strings from a given line, with comments removed.
+ *   This function takes in a string and reads all the strings deliminated by
+ * spaces into a list of strings until it reaches the `#` character or the end
+ * of the line, or until it reaches the maximum number of input strings allowed.
+ * 
+ * @param input_fp File pointer that points to the line to be read.
+ * @param max_nstr Maximum number of input strings allowed.
+ * @param inputArgv (OUTPUT) The input arguments.
+ * @return int Count of input arguments.
+ */
+int readStringInputsFromLine(char *line, const int max_nstr, char inputArgv[][L_STRING]) {
+    char *token;
+
+    int inputArgc = 0; // Initialize the count of input args
+
+    // Read the entire line from the file
+    token = strtok(line, " ");
+
+    while (token != NULL) {
+        // Remove newline characters if present
+        token[strcspn(token, "\n")] = '\0';
+
+        // Ignore comments indicated by '#' and exit the loop
+        if (token[0] == '#' || token[0] == '\0') {
+            break;
+        }
+        #ifdef DEBUG
+        printf("count = %d, token = `%s`\n", inputArgc, token);
+        #endif
+        // if count exceeds max number, exit
+        if (inputArgc >= max_nstr) {
+            printf("Error: Exceeded the maximum number of inputs (%d).\n", max_nstr);
+            return -1;
+        }
+
+        // Copy the file name into the array
+        strncpy(inputArgv[inputArgc], token, L_STRING);
+        inputArgc++; // Increment the count
+        token = strtok(NULL, " ");
+    }
+
+    return inputArgc; // Success
+}
+
+
+/**
+ * @brief Read strings from a line in a file, with comments removed.
+ *   This function takes in a file pointer and starts to read from the inital
+ * position of the file pointer. It reads all the strings deliminated by spaces
+ * into a list of strings until it reaches the `#` character or the end
+ * of the line, or until it reaches the maximum number of input strings allowed.
+ * 
+ * @param input_fp File pointer that points to the line to be read.
+ * @param max_nstr Maximum number of input strings allowed.
+ * @param inputArgv (OUTPUT) The input arguments.
+ * @return int Count of input arguments.
+ */
+int readStringInputsFromFile(FILE *input_fp, const int max_nstr, char inputArgv[][L_STRING]) {
+    char line[L_STRING*3+20]; // Assuming a maximum length for the line
+    // Read the entire line from the file
+    if (fgets(line, sizeof(line), input_fp) == NULL) {
+        fprintf(stderr, "Error reading line from file.\n");
+        return -1;
+    }
+    
+    int inputArgc = readStringInputsFromLine(line, max_nstr, inputArgv);
+    return inputArgc;
+}
 
 
 /**
  * @brief   Read input file.
  */
 void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
-    char *input_filename = malloc(L_STRING * sizeof(char));
-    char *str            = malloc(L_STRING * sizeof(char));
-    char *temp           = malloc(L_STRING * sizeof(char));
+    char input_filename[L_STRING], str[L_STRING], temp[L_STRING];
     int i, Flag_smear_typ = 0, Flag_Temp = 0, Flag_elecT = 0, Flag_ionT = 0, Flag_ionT_end = 0; // Flag_eqT = 0,
     int Flag_cell = 0;
     int Flag_latvec_scale = 0;
@@ -171,6 +238,9 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
                 pSPARC_Input->BCy = 0;
             } else if (strcmpi(temp,"d") == 0) {
                 pSPARC_Input->BCy = 1;
+            } else if (strcmpi(temp,"c") == 0) {
+                pSPARC_Input->BCy = 0;
+                pSPARC_Input->BC = 5;
             } else {
                 printf("Cannot recognize boundary condition: %s\n", temp);
                 exit(EXIT_FAILURE);
@@ -181,6 +251,13 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
                 pSPARC_Input->BCz = 0;
             } else if (strcmpi(temp,"d") == 0) {
                 pSPARC_Input->BCz = 1;
+            } else if (strcmpi(temp,"h") == 0) {
+                pSPARC_Input->BCz = 0;
+                if(pSPARC_Input->BC == 5){
+                    pSPARC_Input->BC = 7;
+                } else{
+                    pSPARC_Input->BC = 6;
+                }        
             } else {
                 printf("Cannot recognize boundary condition: %s\n", temp);
                 exit(EXIT_FAILURE);
@@ -215,6 +292,9 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
             fscanf(input_fp,"%lf",&pSPARC_Input->ECUT_Surface);
             Flag_ECUT_Surface++;
             fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmp(str,"TWIST_ANGLE:") == 0) {
+           fscanf(input_fp,"%lf", &pSPARC_Input->twist);
+           fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"POISSON_SOLVER:") == 0){
             // read solver type
             fscanf(input_fp,"%s",temp);
@@ -313,6 +393,9 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
         } else if (strcmpi(str,"RHO_TRIGGER:") == 0) {
             fscanf(input_fp,"%d",&pSPARC_Input->rhoTrigger);
             fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"NUM_CHEFSI:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->Nchefsi);
+            fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"NSTATES:") == 0){
             fscanf(input_fp,"%d",&pSPARC_Input->Nstates);
             fscanf(input_fp, "%*[^\n]\n");
@@ -365,15 +448,9 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
             fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"TOL_SCF:") == 0) { 
             fscanf(input_fp,"%lf",&pSPARC_Input->TOL_SCF);
-            pSPARC_Input->scf_err_type = 0; // can remove since default is 0
             snprintf(str, L_STRING, "undefined");    // initialize str
             fscanf(input_fp, "%*[^\n]\n");
-        } /*else if (strcmpi(str,"TOL_SCF_QE:") == 0) { 
-            fscanf(input_fp,"%lf",&pSPARC_Input->TOL_SCF);
-            pSPARC_Input->scf_err_type = 1;
-            snprintf(str, L_STRING, "undefined");    // initialize str
-            fscanf(input_fp, "%*[^\n]\n");
-        } */else if (strcmpi(str,"TOL_POISSON:") == 0) {
+        } else if (strcmpi(str,"TOL_POISSON:") == 0) {
             fscanf(input_fp,"%lf",&pSPARC_Input->TOL_POISSON);
             fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"TOL_RELAX:") == 0) {
@@ -475,6 +552,9 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
             fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"PULAY_RESTART:") == 0) {
             fscanf(input_fp,"%d",&pSPARC_Input->PulayRestartFlag);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"STANDARD_EIGEN:") == 0) {    
+            fscanf(input_fp,"%d",&pSPARC_Input->StandardEigenFlag);
             fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"TWTIME:") == 0) {
             fscanf(input_fp,"%lf",&pSPARC_Input->TWtime);
@@ -586,6 +666,91 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
             fscanf(input_fp, "%*[^\n]\n");
         } else if(strcmpi(str,"PRINT_ELECTROSTATICS:") == 0) {
             fscanf(input_fp,"%d",&pSPARC_Input->PrintElectrostaticsFlag);
+        } else if(strcmpi(str,"MLFF_FLAG:") == 0) {
+            // pSPARC->mlff_flag == 1 means on-the-fly MD from scratch, pSPARC->mlff_flag == 21 means only prediction using a known model, pSPARC->mlff_flag == 22 on-the-fly MD starting from a known model
+            fscanf(input_fp,"%d",&pSPARC_Input->mlff_flag);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_INITIAL_STEPS_TRAIN:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->begin_train_steps);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_IF_ATOM_DATA_AVAILABLE:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->if_atom_data_available);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"MLFF_hnl_FILE:") == 0) {
+            fscanf(input_fp,"%s",pSPARC_Input->hnl_file_name);  
+            fscanf(input_fp, "%*[^\n]\n");
+         } else if (strcmpi(str,"MLFF_MODEL_FOLDER:") == 0) {    // MLFF start
+            fscanf(input_fp,"%s",pSPARC_Input->mlff_data_folder);  
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_DESCRIPTOR_TYPE:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->descriptor_typ_MLFF);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_PRINT_FLAG:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->print_mlff_flag);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_INTERNAL_ENERGY_FLAG:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->mlff_internal_energy_flag);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_PRESSURE_TRAIN_FLAG:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->mlff_pressure_train_flag);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_SPLINE_NGRID_FLAG:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->N_rgrid_MLFF);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_RADIAL_BASIS:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->N_max_SOAP);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str, "MLFF_RADIAL_MIN:") == 0) {
+            fscanf(input_fp, "%lf", &pSPARC_Input->radial_min);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str, "MLFF_RADIAL_MAX:") == 0) {
+            fscanf(input_fp, "%lf", &pSPARC_Input->radial_max);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_ANGULAR_BASIS:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->L_max_SOAP);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_MAX_STR_STORE:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->n_str_max_mlff);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_MAX_CONFIG_STORE:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->n_train_max_mlff);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_RCUT_SOAP:") == 0) {
+            fscanf(input_fp,"%lf",&pSPARC_Input->rcut_SOAP);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_SIGMA_ATOM_SOAP:") == 0) {
+            fscanf(input_fp,"%lf",&pSPARC_Input->sigma_atom_SOAP);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_KERNEL_TYPE:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->kernel_typ_MLFF);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_WT_THREE_BODY_SOAP:") == 0) {
+            fscanf(input_fp,"%lf",&pSPARC_Input->beta_3_SOAP);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_REGUL_MIN:") == 0) {
+            fscanf(input_fp,"%lf",&pSPARC_Input->condK_min);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_FACTOR_MULTIPLY_SIGMATOL:") == 0) {
+            fscanf(input_fp,"%lf",&pSPARC_Input->factor_multiply_sigma_tol);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_IF_SPARSIFY_BEFORE_TRAIN:") == 0) {
+            fscanf(input_fp,"%d",&pSPARC_Input->if_sparsify_before_train);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_EXPONENT_SOAP:") == 0) {
+            fscanf(input_fp,"%lf",&pSPARC_Input->xi_3_SOAP);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_TOL_FORCE:") == 0) {
+            fscanf(input_fp,"%lf",&pSPARC_Input->F_tol_SOAP);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if(strcmpi(str,"MLFF_SCALE_FORCE:") == 0) {
+            fscanf(input_fp,"%lf",&pSPARC_Input->F_rel_scale);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"MLFF_SCALE_STRESS:") == 0) {
+            fscanf(input_fp,"%lf %lf %lf %lf %lf %lf", &pSPARC_Input->stress_rel_scale[0], &pSPARC_Input->stress_rel_scale[1], &pSPARC_Input->stress_rel_scale[2],
+                                                       &pSPARC_Input->stress_rel_scale[3], &pSPARC_Input->stress_rel_scale[4], &pSPARC_Input->stress_rel_scale[5]);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"MLFF_DFT_FQ:") == 0) {    // MLFF end
+            fscanf(input_fp,"%d", &pSPARC_Input->MLFF_DFT_fq);
             fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"EXCHANGE_CORRELATION:") == 0) {
             fscanf(input_fp,"%s",pSPARC_Input->XC);  
@@ -605,20 +770,43 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
         } else if (strcmpi(str,"CALC_PRES:") == 0) {
             fscanf(input_fp,"%d",&pSPARC_Input->Calc_pres);  
             fscanf(input_fp, "%*[^\n]\n");
-            printf("WARNING: \"CALC_PRES\" is obsolete, use \"CALC_STRESS\" instead!\n");
         } else if (strcmpi(str,"NPT_SCALE_VECS:") == 0) {
             int dir[3] = {0, 0, 0};
             pSPARC_Input->NPTscaleVecs[0] = 0; pSPARC_Input->NPTscaleVecs[1] = 0; pSPARC_Input->NPTscaleVecs[2] = 0; 
             int scanfResult;
-            scanfResult = fscanf(input_fp,"%d %d %d",&dir[0], &dir[1], &dir[2]);
+            scanfResult = fscanf(input_fp,"%d %d %d\n",&dir[0], &dir[1], &dir[2]);
             if (scanfResult == -1) {
-                scanfResult = fscanf(input_fp,"%d %d",&dir[0], &dir[1]);
+                scanfResult = fscanf(input_fp,"%d %d\n",&dir[0], &dir[1]);
             }
             if (scanfResult == -1) {
-                scanfResult = fscanf(input_fp,"%d",&dir[0]);
+                scanfResult = fscanf(input_fp,"%d\n",&dir[0]);
+            }
+            if (scanfResult == -1) {
+                printf("To correctly input NPT_SCALE_VECS, please do not add space or other characters between number and newline.\n");
+                printf("input as NPT_SCALE_VECS: 1 2 3\n");
+                exit(EXIT_FAILURE);
             }
             for (int i = 0; i < 3; i++) {
                 if (dir[i] > 0) pSPARC_Input->NPTscaleVecs[dir[i] - 1] = 1;
+            }
+            // fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"NPT_SCALE_CONSTRAINTS:") == 0) {
+            fscanf(input_fp,"%s",temp);
+            if (strcmpi(temp,"none") == 0) {
+                pSPARC_Input->NPTconstraintFlag = 0;
+            } else if ((strcmpi(temp, "12") == 0) || (strcmpi(temp, "21") == 0)) {
+                pSPARC_Input->NPTconstraintFlag = 1;
+            } else if ((strcmpi(temp, "13") == 0) || (strcmpi(temp, "31") == 0)) {
+                pSPARC_Input->NPTconstraintFlag = 2;
+            } else if ((strcmpi(temp, "23") == 0) || (strcmpi(temp, "32") == 0)) {
+                pSPARC_Input->NPTconstraintFlag = 3;
+            } else if ((strcmpi(temp, "123") == 0) || (strcmpi(temp, "132") == 0) || (strcmpi(temp, "213") == 0) ||
+                (strcmpi(temp, "231") == 0) || (strcmpi(temp, "312") == 0) || (strcmpi(temp, "321") == 0)) {
+                pSPARC_Input->NPTconstraintFlag = 4;
+            }
+            else {
+                printf("Cannot recognize NPT_SCALE_CONSTRAINTS: %s\n", temp);
+                exit(EXIT_FAILURE);
             }
             fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"NPT_NH_QMASS:") == 0) { 
@@ -633,14 +821,11 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
         } else if (strcmpi(str,"TARGET_PRESSURE:") == 0) {    
             fscanf(input_fp,"%lf",&pSPARC_Input->prtarget);
             fscanf(input_fp, "%*[^\n]\n");
-	    } else if (strcmpi(str,"NPT_NP_QMASS:") == 0) {    
+        } else if (strcmpi(str,"NPT_NP_QMASS:") == 0) {    
             fscanf(input_fp,"%lf",&pSPARC_Input->NPT_NP_qmass);
             fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"NPT_NP_BMASS:") == 0) {    
             fscanf(input_fp,"%lf",&pSPARC_Input->NPT_NP_bmass);
-            fscanf(input_fp, "%*[^\n]\n");
-        } else if (strcmpi(str,"VDWDF_GEN_KERNEL:") == 0) {
-            fscanf(input_fp,"%d",&pSPARC_Input->vdWDFKernelGenFlag);
             fscanf(input_fp, "%*[^\n]\n");
         } else if(strcmpi(str,"VERBOSITY:") == 0) {
             fscanf(input_fp,"%d",&pSPARC_Input->Verbosity);
@@ -728,18 +913,6 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
         } else if (strcmpi(str,"SQ_FLAG:") == 0) {    
             fscanf(input_fp,"%d",&pSPARC_Input->SQFlag);
             fscanf(input_fp, "%*[^\n]\n");
-        } else if (strcmpi(str,"SQ_TYPE_DM:") == 0) {    
-            fscanf(input_fp,"%s",temp);
-            if (strcmpi(temp,"CC") == 0 || strcmpi(temp,"cc") == 0) {
-                pSPARC_Input->SQ_typ_dm = 1;
-            } else if (strcmpi(temp,"GAUSS") == 0 || strcmpi(temp,"gauss") == 0) {
-                pSPARC_Input->SQ_typ_dm = 2;
-            } else {
-                printf("Cannot recognize the SQ type for density matrix: \"%s\"\n", temp);
-                printf("Please use GAUSS (gauss) for Gauss quadrature or CC (cc) for Clenshaw-Curtis\n");
-                exit(EXIT_FAILURE);
-            }
-            fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"SQ_GAUSS_MEM:") == 0) {    
             fscanf(input_fp,"%s",temp);
             if (strcmpi(temp,"LOW") == 0 || strcmpi(temp,"low") == 0) {
@@ -752,32 +925,91 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
                 exit(EXIT_FAILURE);
             }
             fscanf(input_fp, "%*[^\n]\n");
-        } else if (strcmpi(str,"SQ_NPL_C:") == 0) {
-            fscanf(input_fp,"%d",&pSPARC_Input->SQ_npl_c);
-            fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"SQ_NPL_G:") == 0) {
             fscanf(input_fp,"%d",&pSPARC_Input->SQ_npl_g);
-            fscanf(input_fp, "%*[^\n]\n");
-        } else if (strcmpi(str,"SQ_EIGSHIFT_FLAG:") == 0) {
-            fscanf(input_fp,"%d",&pSPARC_Input->SQ_EigshiftFlag);
             fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"SQ_RCUT:") == 0) {
             fscanf(input_fp,"%lf",&pSPARC_Input->SQ_rcut);
             fscanf(input_fp, "%*[^\n]\n");
-        } else if (strcmpi(str,"SQ_FAC_G2C:") == 0) {
-            fscanf(input_fp,"%lf",&pSPARC_Input->SQ_fac_g2c);
-            fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"SQ_TOL_OCC:") == 0) {
             fscanf(input_fp,"%lf",&pSPARC_Input->SQ_tol_occ);
-            fscanf(input_fp, "%*[^\n]\n");
-        } else if (strcmpi(str,"SQ_EIGSHIFT:") == 0) {
-            fscanf(input_fp,"%lf",&pSPARC_Input->SQ_eigshift);
             fscanf(input_fp, "%*[^\n]\n");
         } else if (strcmpi(str,"NP_DOMAIN_SQ_PARAL:") == 0) {
             fscanf(input_fp,"%d", &pSPARC_Input->npNdx_SQ);
             fscanf(input_fp,"%d", &pSPARC_Input->npNdy_SQ);
             fscanf(input_fp,"%d", &pSPARC_Input->npNdz_SQ);
             fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"BAND_STRUCTURE:") == 0) {
+            fscanf(input_fp, "%d", &pSPARC_Input->BandStructFlag);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"KPT_PER_LINE:") == 0) {
+            fscanf(input_fp, "%d", &pSPARC_Input->kpt_per_line);
+            fscanf(input_fp, "%*[^\n]\n");
+        } else if (strcmpi(str,"KPT_PATHS:") == 0) {
+            fscanf(input_fp, "%d", &pSPARC_Input->n_kpt_line);
+            fscanf(input_fp, "%*[^\n]\n");
+            char tmpstr[L_STRING];
+            double kpt_x, kpt_y, kpt_z;
+            for (int line = 0; line < 2 * pSPARC_Input->n_kpt_line; line++) {
+                // read x coords
+                fscanf(input_fp, "%s", tmpstr);
+                // if this line is a comment, skip it
+                if (tmpstr[0]== '#') {
+                    fscanf(input_fp, "%*[^\n]\n");
+                    line--;
+                    continue;
+                }
+                kpt_x = strtod(tmpstr, NULL);
+                // read y coords
+                fscanf(input_fp, "%s", tmpstr);
+                kpt_y = strtod(tmpstr, NULL);
+                // read z coords
+                fscanf(input_fp, "%s", tmpstr);
+                kpt_z = strtod(tmpstr, NULL);
+                fscanf(input_fp, "%*[^\n]\n");
+                pSPARC_Input->kredx[line] = kpt_x;
+                pSPARC_Input->kredy[line] = kpt_y;
+                pSPARC_Input->kredz[line] = kpt_z;
+            }
+
+            #ifdef DEBUG
+            for (int line = 0; line < pSPARC_Input->n_kpt_line; line++) {
+                int k_ind = 2 * line;
+                printf(" Starting coordinates of k-point line %d: (%lf, %lf, %lf)\n", line+1,
+                    pSPARC_Input->kredx[k_ind], pSPARC_Input->kredy[k_ind], pSPARC_Input->kredz[k_ind]);
+                k_ind++;
+                printf("   Ending coordinates of k-point line %d: (%lf, %lf, %lf)\n", line+1,
+                    pSPARC_Input->kredx[k_ind], pSPARC_Input->kredy[k_ind], pSPARC_Input->kredz[k_ind]);
+            }
+            #endif
+        } else if (strcmpi(str,"INPUT_DENS_FILE:") == 0) {
+            char inputDensFnames[3][L_STRING]; // at most 3 file names
+            int nInputDensFname = readStringInputsFromFile(input_fp, 3, inputDensFnames);
+            pSPARC_Input->densfilecount = nInputDensFname;
+            if (nInputDensFname == 1) {
+                strncpy(pSPARC_Input->InDensTCubFilename, inputDensFnames[0], L_STRING);
+            } else if (nInputDensFname == 3) {
+                strncpy(pSPARC_Input->InDensTCubFilename, inputDensFnames[0], L_STRING);
+                strncpy(pSPARC_Input->InDensUCubFilename, inputDensFnames[1], L_STRING);
+                strncpy(pSPARC_Input->InDensDCubFilename, inputDensFnames[2], L_STRING);
+            } else {
+                printf(RED "[FATAL] Density file names not provided properly! (Provide 1 file w/o spin or 3 files with spin)\n" RESET);
+                exit(EXIT_FAILURE);
+            }
+
+            #ifdef DEBUG
+            if (nInputDensFname >= 0) {
+                printf("Density file names read = ([");
+                for (int i = 0; i < nInputDensFname; i++) {
+                    if (i == 0) printf("%s", inputDensFnames[i]);
+                    else printf(", %s", inputDensFnames[i]);
+                }
+                printf("], %d)\n", nInputDensFname);
+            }
+            printf("Total Dens file name: %s\n", pSPARC_Input->InDensTCubFilename);
+            printf("Dens_up file name: %s\n", pSPARC_Input->InDensUCubFilename);
+            printf("Dens_dw file name: %s\n", pSPARC_Input->InDensDCubFilename);
+            #endif
         } else {
             printf("\nCannot recognize input variable identifier: \"%s\"\n",str);
             exit(EXIT_FAILURE);
@@ -1036,6 +1268,181 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
 } 
 
 
+/**
+ * @brief Read density in cube format.
+ * 
+ * @param filename Name of the density file in cube format.
+ * @param dens_gridsizes (OUTPUT) Grid sizes (in 3-dim) of the density read.
+ * @param dens_latvecs (OUTPUT) Lattice vectors (scaled) read.
+ * @return double* (OUTPUT) Density array.
+ */
+double* readDens_cube(char *filename, int dens_gridsizes[3], double dens_latvecs[9]) {
+#ifdef DEBUG
+    printf("Reading CUBE file: %s ...\n", filename);
+#endif
+
+    FILE *dens_fp = fopen(filename, "r");
+    if (dens_fp == NULL) {
+        printf("Cannot open file \"%s\"\n", filename);
+        exit(EXIT_FAILURE);
+    }
+
+    int n_atom,cube_size_x,cube_size_y,cube_size_z;
+    double x1,x2,x3;
+    double y1,y2,y3;
+    double z1,z2,z3;
+    char tempchar[L_STRING];
+    double tempval;
+
+    fscanf(dens_fp, "%*[^\n]\n");
+    fscanf(dens_fp,"%s", tempchar);
+    fscanf(dens_fp,"%s", tempchar);
+
+    fscanf(dens_fp, "%lf", &tempval);
+    fscanf(dens_fp, "%*[^\n]\n");
+    fscanf(dens_fp, "%d", &n_atom);
+    // printf("n_atom = %d\n", n_atom);
+
+    fscanf(dens_fp, "%*[^\n]\n");
+    fscanf(dens_fp, "%d", &cube_size_x);
+    fscanf(dens_fp, "%lf", &x1);
+    fscanf(dens_fp, "%lf", &x2);
+    fscanf(dens_fp, "%lf", &x3);
+    fscanf(dens_fp, "%d", &cube_size_y);
+    fscanf(dens_fp, "%lf", &y1);
+    fscanf(dens_fp, "%lf", &y2);
+    fscanf(dens_fp, "%lf", &y3);
+    fscanf(dens_fp, "%d", &cube_size_z);
+    fscanf(dens_fp, "%lf", &z1);
+    fscanf(dens_fp, "%lf", &z2);
+    fscanf(dens_fp, "%lf", &z3);
+
+    dens_latvecs[0] = cube_size_x * x1;
+    dens_latvecs[1] = cube_size_x * x2;
+    dens_latvecs[2] = cube_size_x * x3;
+    dens_latvecs[3] = cube_size_y * y1;
+    dens_latvecs[4] = cube_size_y * y2;
+    dens_latvecs[5] = cube_size_y * y3;
+    dens_latvecs[6] = cube_size_z * z1;
+    dens_latvecs[7] = cube_size_z * z2;
+    dens_latvecs[8] = cube_size_z * z3;
+    dens_gridsizes[0] = cube_size_x;
+    dens_gridsizes[1] = cube_size_y;
+    dens_gridsizes[2] = cube_size_z;
+
+    int len = cube_size_x * cube_size_y * cube_size_z;
+    double *dens = malloc(len * sizeof(double));
+    assert(dens != NULL);
+
+    // read density data and save it in dens
+	for(int i = 0; i < n_atom; i++) {
+		fscanf(dens_fp, "%lf",&tempval);
+		fscanf(dens_fp, "%lf",&tempval);
+		fscanf(dens_fp, "%lf",&tempval);
+		fscanf(dens_fp, "%lf",&tempval);
+		fscanf(dens_fp, "%lf",&tempval);
+	}
+	
+	for (int i = 0; i < cube_size_x; i++) 
+	{
+		for (int j = 0; j < cube_size_y; j++) 
+		{
+			for (int k = 0; k < cube_size_z; k++) 
+			{
+				fscanf(dens_fp, "%lf", &dens[(i)+(j)*cube_size_x+(k)*cube_size_x*cube_size_y]);
+			}
+		}
+	}
+
+    return dens;
+}
+
+
+/**
+ * @brief Double-check if the given scaled latvecs are equiv. to the
+ * latvecs and the given scale factors.
+ * 
+ * @param latvecs_scaled The scaled lattice vectors.
+ * @param latvec Lattice vectors to be scaled.
+ * @param scalex Scale factor in the 1st dim.
+ * @param scaley Scale factor in the 2nd dim.
+ * @param scalez Scale factor in the 3rd dim.
+ * @return int 0 - success, 1 - fail.
+ */
+int check_lattice(
+    const double latvecs_scaled[9], const double latvec[9],
+    const double scalex, const double scaley, const double scalez,
+    double tol)
+{
+    // check lattice vectors
+    double diffx = (latvecs_scaled[0] - scalex * latvec[0])
+                 * (latvecs_scaled[0] - scalex * latvec[0])
+                 + (latvecs_scaled[1] - scalex * latvec[1])
+                 * (latvecs_scaled[1] - scalex * latvec[1])
+                 + (latvecs_scaled[2] - scalex * latvec[2])
+                 * (latvecs_scaled[2] - scalex * latvec[2]);
+    diffx = sqrt(diffx);
+
+    double diffy = (latvecs_scaled[3] - scaley * latvec[3])
+                 * (latvecs_scaled[3] - scaley * latvec[3])
+                 + (latvecs_scaled[4] - scaley * latvec[4])
+                 * (latvecs_scaled[4] - scaley * latvec[4])
+                 + (latvecs_scaled[5] - scaley * latvec[5])
+                 * (latvecs_scaled[5] - scaley * latvec[5]);
+    diffy = sqrt(diffy);
+
+    double diffz = (latvecs_scaled[6] - scalez * latvec[6])
+                 * (latvecs_scaled[6] - scalez * latvec[6])
+                 + (latvecs_scaled[7] - scalez * latvec[7])
+                 * (latvecs_scaled[7] - scalez * latvec[7])
+                 + (latvecs_scaled[8] - scalez * latvec[8])
+                 * (latvecs_scaled[8] - scalez * latvec[8]);
+    diffz = sqrt(diffz);
+
+	if (diffx > tol || diffy > tol || diffz > tol) {
+        return 1;
+    }
+    return 0;
+}
+
+/**
+ * @brief Read data from cube file and check if the lattice vectors
+ * and the grid sizes match with the input lattice and grid.
+ * 
+ * @param pSPARC 
+ * @param filename File name of the cube file.
+ * @return double* Data from file, allocated within this function.
+ */
+double* read_vec_cube(SPARC_OBJ *pSPARC, char *filename) {
+    int dens_gridsizes[3];
+	double dens_latvecs[9];
+	// read_dens2(filename, dens, gridsizes, dens_latvecs);
+	double *dens = readDens_cube(filename, dens_gridsizes, dens_latvecs);
+
+    // check lattice vectors
+    if (check_lattice(dens_latvecs, pSPARC->LatVec,
+        pSPARC->latvec_scale_x, pSPARC->latvec_scale_y,
+        pSPARC->latvec_scale_z, 1e-4) == 1)
+    {
+        printf("\n[FATAL] Incorrect CUBE file (%s): inconsistent lattice vectors!\n", filename);
+        free(dens);
+        MPI_Abort(MPI_COMM_WORLD,1);
+    }
+
+    // check gridsizes
+    int gridsizes[3];
+	gridsizes[0] = pSPARC->Nx;
+	gridsizes[1] = pSPARC->Ny;
+	gridsizes[2] = pSPARC->Nz;
+    if (gridsizes[0] != dens_gridsizes[0] || gridsizes[1] != dens_gridsizes[1] || gridsizes[2] != dens_gridsizes[2]) {
+        printf("\n[FATAL] Incorrect CUBE file (%s): inconsistent grid sizes!\n", filename);
+        free(dens);
+        MPI_Abort(MPI_COMM_WORLD,1);
+    }
+
+    return dens;
+}
+
 
 /**
  * @brief   Read ion file.
@@ -1146,7 +1553,7 @@ void read_ion(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
     // allocate memory for atom positions, atom relax constraints and atom spin
     pSPARC->atom_pos = (double *)malloc(3*n_atom*sizeof(double));
     pSPARC->mvAtmConstraint = (int *)malloc(3*n_atom*sizeof(int));
-    pSPARC->atom_spin = (double *)calloc(n_atom, sizeof(double));
+    pSPARC->atom_spin = (double *)calloc(3*n_atom, sizeof(double));
     if (pSPARC->atom_pos == NULL || pSPARC->mvAtmConstraint == NULL || pSPARC->atom_spin == NULL) {
         printf("\nCannot allocate memory for atom positions, atom relax constraints and atom spin!\n");
         exit(EXIT_FAILURE);
@@ -1282,11 +1689,17 @@ void read_ion(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
                 if (nums_read == 0) {
                     printf(RED "ERROR: Number of initial spin is less than number of atoms for atom type %d.\n" RESET, typcnt+1);
                     exit(EXIT_FAILURE);
-                } else if (nums_read != 1)  { 
-                    printf(RED "ERROR: please provide 1 initial spin for each atom of atom type %d in a row.\n"RESET, typcnt+1);
+                } else if (nums_read != 1 && nums_read != 3)  { 
+                    printf(RED "ERROR: Please specify either spin in z direction or spin in x, y, z directions for atom type %d.\n"RESET, typcnt+1);
                     exit(EXIT_FAILURE);
                 }
-                pSPARC->atom_spin[atmcnt_spin] = array_read_double[0];
+                if (nums_read == 1) {
+                    pSPARC->atom_spin[3*atmcnt_spin+2] = array_read_double[0];
+                } else if (nums_read == 3) {
+                    pSPARC->atom_spin[3*atmcnt_spin] = array_read_double[0];
+                    pSPARC->atom_spin[3*atmcnt_spin+1] = array_read_double[1];
+                    pSPARC->atom_spin[3*atmcnt_spin+2] = array_read_double[2];
+                }
                 atmcnt_spin++;
             }
             pSPARC->IsSpin[typcnt] = 1;
@@ -1336,6 +1749,12 @@ void read_ion(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
     free(ion_filename);
     free(str);
     fclose(ion_fp);
+
+    // calculate total mass
+    pSPARC->TotalMass = 0;
+    for (ityp = 0; ityp < pSPARC->Ntypes; ityp++) {
+        pSPARC->TotalMass += pSPARC->Mass[ityp] * pSPARC->nAtomv[ityp];
+    }    
 }
 
 
@@ -1467,7 +1886,7 @@ void read_pseudopotential_PSP(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC)
         }
         
         // Check the scientific notation of floating point number 
-        char notation = '\0';
+       /* char notation = '\0';
         int num = 0;
         do {
             fscanf(psd_fp,"%s",str);
@@ -1478,7 +1897,7 @@ void read_pseudopotential_PSP(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC)
                    "       Please run sed -i -e 's/%c-/E-/g' -e 's/%c+/E+/g' *.psp8 in the\n"
                    "       pseudopotential directory to convert to a compatible scientific notation\n"RESET, notation, notation);
             exit(EXIT_FAILURE);
-        }
+        }*/
         
         // reset file pointer to the start of the file
         fseek(psd_fp, 0L, SEEK_SET);  // returns 0 if succeeded, can use to check status
@@ -1630,17 +2049,6 @@ void read_pseudopotential_PSP(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC)
             fscanf(psd_fp,"%lf %lf", &vtemp, &vtemp2);
         }
         
-        //// read rc from <INPUT> parameters
-        //do {
-        //  fscanf(psd_fp,"%s",str);
-        //} while (strcmpi(str,"qcut"));
-
-        //for (l = 0; l <= pSPARC->psd[ityp].lmax; l++) {
-        //    fscanf(psd_fp,"%lf %lf",&vtemp2,&vtemp);
-        //    pSPARC->psd[ityp].rc[l] = vtemp;
-        //    fscanf(psd_fp, "%*[^\n]\n"); // go to next line
-        //}
-        
         /* check pseudopotential data */
         // check radial grid size
         if (pSPARC->psd[ityp].size < 2) {
@@ -1677,6 +2085,26 @@ void read_pseudopotential_PSP(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC)
             printf("\nWARNING: radial grid is non-uniform for psp8 format! (%s)\n\n", psd_filename);
         }
 
+        // check if r_core is large enough
+        for (l = 0; l <= pSPARC->psd[ityp].lmax; l++) {
+            if (l == pSPARC->localPsd[ityp]) continue;
+            double r_core_read = pSPARC->psd[ityp].rc[l];            
+            for (kk = 0; kk < pSPARC->psd[ityp].ppl[l]; kk++) {
+                for (jj = 0; jj < pSPARC->psd[ityp].size; jj++) {
+                    double r = pSPARC->psd[ityp].RadialGrid[jj];
+                    // only check UdV after r_core
+                    if (r <= r_core_read) continue;
+                    if (fabs(pSPARC->psd[ityp].UdV[(lpos[l]+kk)*pSPARC->psd[ityp].size+jj]) > 1E-8 
+                        && r > pSPARC->psd[ityp].rc[l])
+                        pSPARC->psd[ityp].rc[l] = r;
+                }
+            }
+        #ifdef DEBUG
+            if (fabs(pSPARC->psd[ityp].rc[l]-r_core_read) > TEMP_TOL)
+                printf("l = %d, r_core read %.5f, change to rmax where |UdV| < 1E-8, %.5f.\n", l, r_core_read, pSPARC->psd[ityp].rc[l]);
+        #endif
+        }
+
         // close the file
         fclose(psd_fp);
         free(lpos);
@@ -1694,13 +2122,13 @@ void read_pseudopotential_PSP(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC)
         soc_count += pSPARC->psd[ityp].pspsoc;
     }
     if (soc_count == 0) {
-        pSPARC->Nspinor = 1;
         pSPARC->SOC_Flag = 0;
     } else if (soc_count == pSPARC->Ntypes) {
-        pSPARC->Nspinor = 2;
         pSPARC->SOC_Flag = 1;
     } else {
         printf(RED "ERROR: Please provide fully relativistic pseudopotential for all types of atoms!\n" RESET);
         exit(EXIT_FAILURE);
     }
 }
+
+

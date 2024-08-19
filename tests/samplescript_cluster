@@ -1,15 +1,15 @@
 #!/bin/bash
-#SBATCH -Jtesting_suite
-#SBATCH --account=hive-phanish6
-#SBATCH -phive-interact
+#SBATCH -J SPARC_testsuite
+#SBATCH -A gts-phanish6                    # Account name
+#SBATCH -p inferno                             # Partition
 #SBATCH -N 2 --ntasks-per-node=24
 #SBATCH --mem-per-cpu=7G
 #SBATCH -t1:00:00
-
-
 cd $SLURM_SUBMIT_DIR
 
-module load mkl
-
+module reset
+module load intel
 echo $PWD 
-srun ./sparc -name ./Si_cell/temp_run/Si_cell -log_summary > ./Si_cell/temp_run/Si_cell.log
+
+
+

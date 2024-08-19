@@ -22,7 +22,7 @@
 #include "gradVecRoutinesKpt.h"
 #include "tools.h"
 #include "isddft.h"
-
+#include "cyclix_gradVec.h"
 
 
 /**
@@ -33,8 +33,8 @@
  *          the multiplication together. TODO: think of a more efficient way!
  */
 void Gradient_vectors_dir_kpt(const SPARC_OBJ *pSPARC, const int DMnd, const int *DMVertices,
-                              const int ncol, const double c, const double complex *x, 
-                              double complex *Dx, const int dir, const double kpt_vec, MPI_Comm comm)
+                              const int ncol, const double c, const double _Complex *x, const int ldi,
+                              double _Complex *Dx, const int ldo, const int dir, const double *kpt_vec, MPI_Comm comm)
 {
     int nproc;
     MPI_Comm_size(comm, &nproc);
@@ -44,9 +44,13 @@ void Gradient_vectors_dir_kpt(const SPARC_OBJ *pSPARC, const int DMnd, const int
         MPI_Cart_get(comm, 3, dims, periods, my_coords);
     else 
         dims[0] = dims[1] = dims[2] = 1;
-   
-    for (int i = 0; i < ncol; i++)
-        Gradient_vec_dir_kpt(pSPARC, DMnd, DMVertices, 1, c, x+i*(unsigned)DMnd, Dx+i*(unsigned)DMnd, dir, kpt_vec, comm, dims);  
+    
+    if (pSPARC->CyclixFlag) {
+        Gradient_vectors_dir_kpt_cyclix(pSPARC, DMnd, DMVertices, ncol, c, x, ldi, Dx, ldo, dir, kpt_vec, comm, dims);
+    } else {
+        for (int i = 0; i < ncol; i++)
+            Gradient_vec_dir_kpt(pSPARC, DMnd, DMVertices, 1, c, x+i*(unsigned)ldi, ldi, Dx+i*(unsigned)ldo, ldo, dir, kpt_vec, comm, dims);  
+    }
 }
 
 
@@ -57,8 +61,8 @@ void Gradient_vectors_dir_kpt(const SPARC_OBJ *pSPARC, const int DMnd, const int
  * @param dir   Direction of derivatives to take: 0 -- x-dir, 1 -- y-dir, 2 -- z-dir
  */
 void Gradient_vec_dir_kpt(const SPARC_OBJ *pSPARC, const int DMnd, const int *DMVertices,
-                      const int ncol, const double c, const double complex *x,
-                      double complex *Dx, const int dir, const double kpt_vec, MPI_Comm comm, const int* dims)
+                      const int ncol, const double c, const double _Complex *x, const int ldi,
+                      double _Complex *Dx, const int ldo, const int dir, const double *kpt_vec, MPI_Comm comm, const int* dims)
 {
     int nproc = dims[0] * dims[1] * dims[2];
     double cellsizes[3];
@@ -80,7 +84,7 @@ void Gradient_vec_dir_kpt(const SPARC_OBJ *pSPARC, const int DMnd, const int *DM
     isDir[0] = (int)(dir == 0); isDir[1] = (int)(dir == 1); isDir[2] = (int)(dir == 2);
     exDir[0] = isDir[0] * FDn; exDir[1] = isDir[1] * FDn; exDir[2] = isDir[2] * FDn;
     
-    // The user has to make sure DMnd = DMnx * DMny * DMnz
+    // The user has to make sure DMnd = DMnx * DMny * DMnz * Nspinor_spincomm
     int DMnx = DMVertices[1] - DMVertices[0] + 1;
     int DMny = DMVertices[3] - DMVertices[2] + 1;
     int DMnz = DMVertices[5] - DMVertices[4] + 1;
@@ -108,15 +112,15 @@ void Gradient_vec_dir_kpt(const SPARC_OBJ *pSPARC, const int DMnd, const int *DM
     int nbrcount, nbr_i;
     
     MPI_Request request;
-    double complex *x_in, *x_out;   
+    double _Complex *x_in, *x_out;   
     x_in = NULL;
     x_out = NULL;
 
     if (nproc > 1) {
         int nd_in = ncol * pSPARC->order * (isDir[0] * DMny * DMnz + DMnx * isDir[1] * DMnz + DMnxny * isDir[2]);
         int nd_out = nd_in;
-        x_in  = (double complex *)calloc( nd_in, sizeof(double complex));
-        x_out = (double complex *)malloc( nd_out * sizeof(double complex)); // no need to init x_out
+        x_in  = (double _Complex *)calloc( nd_in, sizeof(double _Complex));
+        x_out = (double _Complex *)malloc( nd_out * sizeof(double _Complex)); // no need to init x_out
 
         int sendcounts[6], sdispls[6], recvcounts[6], rdispls[6];
         // set up parameters for MPI_Ineighbor_alltoallv
@@ -137,7 +141,7 @@ void Gradient_vec_dir_kpt(const SPARC_OBJ *pSPARC, const int DMnd, const int *DM
             // if dims[i] < 3 and periods[i] == 1, switch send buffer for left and right neighbors
             nbrcount = nbr_i + (1 - 2 * (nbr_i % 2)) * (int)(dims[nbr_i / 2] < 3 && periods[nbr_i / 2]);
             for (n = 0; n < ncol; n++) {
-                nshift = n * DMnd;
+                nshift = n * ldi;
                 for (k = kstart[nbrcount]; k < kend[nbrcount]; k++) {
                     kshift = nshift + k * DMnxny;
                     for (j = jstart[nbrcount]; j < jend[nbrcount]; j++) {
@@ -157,7 +161,7 @@ void Gradient_vec_dir_kpt(const SPARC_OBJ *pSPARC, const int DMnd, const int *DM
     }
 
     // while the non-blocking communication is undergoing, compute Dx which only requires values from local memory
-    double complex *x_ex = (double complex *)malloc(ncol * DMnd_ex * sizeof(double complex));
+    double _Complex *x_ex = (double _Complex *)malloc(ncol * DMnd_ex * sizeof(double _Complex));
     assert(x_ex != NULL);
 
     double *D1_stencil_coeffs_dirs[3];
@@ -172,13 +176,13 @@ void Gradient_vec_dir_kpt(const SPARC_OBJ *pSPARC, const int DMnd, const int *DM
     int pshift_ex = pshift_ex_dirs[dir];
 
     // note: here kpt_vec should have been different for different directions! But the other dirs won't be used
-    double complex phase_fac_l_x = cos(kpt_vec * cellsizes[0]) - sin(kpt_vec * cellsizes[0]) * I;
-    double complex phase_fac_l_y = cos(kpt_vec * cellsizes[1]) - sin(kpt_vec * cellsizes[1]) * I;
-    double complex phase_fac_l_z = cos(kpt_vec * cellsizes[2]) - sin(kpt_vec * cellsizes[2]) * I;
-    double complex phase_fac_r_x = conj(phase_fac_l_x);
-    double complex phase_fac_r_y = conj(phase_fac_l_y);
-    double complex phase_fac_r_z = conj(phase_fac_l_z);
-    double complex phase_factors[6]; // xl, xr, yl, yr, zl, zr
+    double _Complex phase_fac_l_x = cos(*kpt_vec * cellsizes[0]) - sin(*kpt_vec * cellsizes[0]) * I;
+    double _Complex phase_fac_l_y = cos(*kpt_vec * cellsizes[1]) - sin(*kpt_vec * cellsizes[1]) * I;
+    double _Complex phase_fac_l_z = cos(*kpt_vec * cellsizes[2]) - sin(*kpt_vec * cellsizes[2]) * I;
+    double _Complex phase_fac_r_x = conj(phase_fac_l_x);
+    double _Complex phase_fac_r_y = conj(phase_fac_l_y);
+    double _Complex phase_fac_r_z = conj(phase_fac_l_z);
+    double _Complex phase_factors[6]; // xl, xr, yl, yr, zl, zr
     phase_factors[0] = phase_fac_l_x;
     phase_factors[1] = phase_fac_r_x;
     phase_factors[2] = phase_fac_l_y;
@@ -189,15 +193,15 @@ void Gradient_vec_dir_kpt(const SPARC_OBJ *pSPARC, const int DMnd, const int *DM
     int DMnz_exDir = DMnz+exDir[2];
     int DMny_exDir = DMny+exDir[1];
     int DMnx_exDir = DMnx+exDir[0];
-    count = 0;
     for (n = 0; n < ncol; n++){
         nshift = n * DMnd_ex;
+        count = 0;
         for (k = exDir[2]; k < DMnz_exDir; k++){
             kshift = nshift + k * DMnxny_ex;
             for (j = exDir[1]; j < DMny_exDir; j++){
                 jshift = kshift + j * DMnx_ex;
                 for (i = exDir[0]; i < DMnx_exDir; i++){
-                    x_ex[jshift+i] = x[count++]; // this saves index calculation time
+                    x_ex[jshift+i] = x[count++ + n*ldi]; // this saves index calculation time
                 }
             }
         }
@@ -238,7 +242,7 @@ void Gradient_vec_dir_kpt(const SPARC_OBJ *pSPARC, const int DMnd, const int *DM
             const int i_e = iend[nbrcount];
             int is_block_out = is_grid_outside(
                 i_s, j_s, k_s, -exDir[0], -exDir[1], -exDir[2], DMVertices, gridsizes);
-            double complex phase_factor = is_block_out ? phase_factors[nbrcount] : 1.0;
+            double _Complex phase_factor = is_block_out ? phase_factors[nbrcount] : 1.0;
             for (n = 0; n < ncol; n++) {
                 nshift = n * DMnd_ex;
                 for (k = k_s; k < k_e; k++) {
@@ -296,9 +300,9 @@ void Gradient_vec_dir_kpt(const SPARC_OBJ *pSPARC, const int DMnd, const int *DM
                 // assuming the whole block is either all in or all out
                 int is_block_out = is_grid_outside(
                     ip_s, jp_s, kp_s, -exDir[0], -exDir[1], -exDir[2], DMVertices, gridsizes);
-                double complex phase_factor = is_block_out ? phase_factors[nbr_i] : 1.0;
+                double _Complex phase_factor = is_block_out ? phase_factors[nbr_i] : 1.0;
                 for (n = 0; n < ncol; n++) {
-                    nshift = n * DMnd_ex; nshift1 = n * DMnd;
+                    nshift = n * DMnd_ex; nshift1 = n * ldi;
                     for (k = k_s, kp = kp_s; k < k_e; k++, kp++) {
                         kshift = nshift + kp * DMnxny_ex; kshift1 = nshift1 + k * DMnxny;
                         for (j = j_s, jp = jp_s; j < j_e; j++, jp++) {
@@ -328,7 +332,7 @@ void Gradient_vec_dir_kpt(const SPARC_OBJ *pSPARC, const int DMnd, const int *DM
 
     // calculate dx
     for (n = 0; n < ncol; n++) {
-        Calc_DX_kpt(x_ex+n*DMnd_ex, Dx+n*DMnd, FDn, pshift_ex, DMnx_ex, DMnx, DMnxny_ex, DMnxny,
+        Calc_DX_kpt(x_ex+n*DMnd_ex, Dx+n*ldo, FDn, pshift_ex, DMnx_ex, DMnx, DMnxny_ex, DMnxny,
                 0, DMnx, 0, DMny, 0, DMnz, exDir[0], exDir[1], exDir[2], D1_stencil_coeffs_dirs[dir], w1_diag);
     }
 
@@ -341,7 +345,7 @@ void Gradient_vec_dir_kpt(const SPARC_OBJ *pSPARC, const int DMnd, const int *DM
  * @brief: function to calculate derivative
  */
 void Calc_DX_kpt(
-    const double complex *X, double complex *DX,
+    const double _Complex *X, double _Complex *DX,
     const int radius,      const int stride_X,
     const int stride_y_X,  const int stride_y_DX,
     const int stride_z_X,  const int stride_z_DX,
@@ -371,7 +375,7 @@ void Calc_DX_kpt(
             {
                 int ishift_DX = jshift_DX + i + x_DX_spos;
                 int ishift_X = jshift_X + i + x_X_spos;
-                double complex res = X[ishift_X] * c;
+                double _Complex res = X[ishift_X] * c;
                 for (r = 1; r <= radius; r++)
                 {
                     int stride_X_r = r * stride_X;

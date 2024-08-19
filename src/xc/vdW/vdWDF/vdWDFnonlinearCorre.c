@@ -40,14 +40,14 @@
 #include "tools.h"
 #include "parallelization.h"
 #include "vdWDFnonlinearCorre.h"
+#include "vdWDFparallelization.h"
 #include "gradVecRoutines.h"
 
 /** BLAS and LAPACK routines */
 #ifdef USE_MKL
-#include <mkl.h>
+    #include <mkl.h>
 #else
-#include <cblas.h>
-#include <lapacke.h>
+    #include <cblas.h>
 #endif
 /** ScaLAPACK routines */
 #ifdef USE_MKL
@@ -71,7 +71,6 @@
 /*
  Structure of functions in vdWDFNonlinearCorre.c
 
- Calculate_E_V_vdWDF // Compute vdwaDF energy and potential, called by Calculate_Vxc_GGA in exchangeCorrelation.c
  ├──get_q0_Grid
  |  ├──pw
  |  └──saturate_q
@@ -79,15 +78,11 @@
  ├──compute_Gvectors
  ├──theta_generate_FT
  |  └──parallel_FFT
- |     ├──compose_FFTInput
- |     └──compose_FFTOutput
  ├──vdWDF_energy
  |  ├──interpolate_kernel
  |  └──kernel_label
  ├──u_generate_iFT
  |  └──parallel_iFFT
- |     ├──compose_FFTInput (the same two functions in parallel_FFT)
- |     └──compose_FFTOutput
  └──vdWDF_potential
 
 */
@@ -438,128 +433,9 @@ void compute_Gvectors(SPARC_OBJ *pSPARC)
     // #endif
 }
 
-// Not sure whether the dividing method of SPARC on z axis can always be the same as the dividing method of DftiGetValueDM
-// the usage of this function is to re-divide data on z axis for fitting the dividing of parallel FFT functions
-// For example, the grid has 22 nodes on z direction, and 3 processors are on z axis (0, 0, z). If SPARC divides it into 8+8+7,
-// but DftiGetValueDM divides it into 7+8+8, then it is necessary to reorganize data
-void compose_FFTInput(int *gridsizes, int length, int *start, double _Complex *FFTInput, int *allStartK, double _Complex *inputData, MPI_Comm zAxisComm)
-{
-    int zAxisrank;
-    int sizeZcomm;
-    MPI_Comm_size(zAxisComm, &sizeZcomm);
-    MPI_Comm_rank(zAxisComm, &zAxisrank);
-    int numElesInGlobalPlane = gridsizes[0] * gridsizes[1];
-    int *zPlaneInputStart = start;
-    int zP;
 
-    int *diffStart = (int *)malloc(sizeof(int) * (sizeZcomm + 1));
-    diffStart[0] = 0;
-    for (zP = 1; zP < sizeZcomm; zP++)
-    {
-        diffStart[zP] = allStartK[zP] - zPlaneInputStart[zP];
-    }
-    diffStart[sizeZcomm] = 0;
-    int planeInputStart, FFTInputStart, selfLength; // transfer data in inputDataRealSpace to FFTInput. The relationship can be shown by a figure.
-    planeInputStart = max(0, diffStart[zAxisrank] * numElesInGlobalPlane);
-    FFTInputStart = max(0, -diffStart[zAxisrank] * numElesInGlobalPlane);
-    selfLength = length - max(0, diffStart[zAxisrank]) - max(0, -diffStart[zAxisrank + 1]);
-    memcpy(FFTInput + FFTInputStart, inputData + planeInputStart, sizeof(double _Complex) * numElesInGlobalPlane * selfLength);
-    // printf("zAxisrank %d, FFTInputStart %d, planeInputStart %d, selfLength %d\n", zAxisrank, FFTInputStart, planeInputStart, selfLength);
 
-    for (zP = 1; zP < sizeZcomm; zP++)
-    { // attention: not start from 0.
-        if (diffStart[zP] > 0)
-        { // processor[rank] send some plane data into processor[rank - 1]
-            if (zAxisrank == zP)
-            {
-                MPI_Send(inputData, numElesInGlobalPlane * diffStart[zP], MPI_C_DOUBLE_COMPLEX,
-                         zP - 1, 0, zAxisComm);
-            }
-            if (zAxisrank == zP - 1)
-            {
-                MPI_Status stat;
-                MPI_Recv(FFTInput + numElesInGlobalPlane * (FFTInputStart + selfLength), numElesInGlobalPlane * diffStart[zP], MPI_C_DOUBLE_COMPLEX,
-                         zP, 0, zAxisComm, &stat);
-            }
-        }
-        else if (diffStart[zP] < 0)
-        { // processor[rank] receive some plane data from processor[rank - 1]
-            if (zAxisrank == zP)
-            {
-                MPI_Status stat;
-                MPI_Recv(FFTInput, -numElesInGlobalPlane * diffStart[zP], MPI_C_DOUBLE_COMPLEX,
-                         zP - 1, 0, zAxisComm, &stat);
-            }
-            if (zAxisrank == zP - 1)
-            {
-                MPI_Send(inputData + numElesInGlobalPlane * (planeInputStart + selfLength), -numElesInGlobalPlane * diffStart[zP], MPI_C_DOUBLE_COMPLEX,
-                         zP, 0, zAxisComm);
-            }
-        }
-    }
-    free(diffStart);
-}
-
-// Like the usage of compose_FFTInput
-void compose_FFTOutput(int *gridsizes, int length, int *start, double _Complex *FFTOutput, int *allStartK, int *allLengthK, double _Complex *outputData, MPI_Comm zAxisComm)
-{
-    int zAxisrank;
-    int sizeZcomm;
-    MPI_Comm_size(zAxisComm, &sizeZcomm);
-    MPI_Comm_rank(zAxisComm, &zAxisrank);
-    int numElesInGlobalPlane = gridsizes[0] * gridsizes[1];
-    int *zPlaneOutputStart = start;
-    int zP;
-
-    int *diffStart = (int *)malloc(sizeof(int) * (sizeZcomm + 1));
-    diffStart[0] = 0;
-    for (zP = 1; zP < sizeZcomm; zP++)
-    {
-        diffStart[zP] = allStartK[zP] - zPlaneOutputStart[zP];
-    }
-    diffStart[sizeZcomm] = 0;
-    int planeOutputStart, FFTOutputStart, FFTLength; // transfer data in planeInput to FFTInput. The relationship can be shown by a figure.
-    planeOutputStart = max(0, diffStart[zAxisrank] * numElesInGlobalPlane);
-    FFTOutputStart = max(0, -diffStart[zAxisrank] * numElesInGlobalPlane);
-    FFTLength = allLengthK[zAxisrank] + min(0, diffStart[zAxisrank]) + min(0, -diffStart[zAxisrank + 1]);
-    // printf("zAxisrank %d, FFTOutputStart %d, planeOutputStart %d, FFTLength %d\n", zAxisrank, FFTOutputStart, planeOutputStart, FFTLength);
-    memcpy(outputData + planeOutputStart, FFTOutput + FFTOutputStart, sizeof(double _Complex) * numElesInGlobalPlane * FFTLength);
-    for (zP = 1; zP < sizeZcomm; zP++)
-    { // attention: not start from 0.
-        if (diffStart[zP] > 0)
-        { // processor[rank] send some plane data into processor[rank - 1]
-            if (zAxisrank == zP - 1)
-            {
-                MPI_Send(FFTOutput + numElesInGlobalPlane * FFTLength, numElesInGlobalPlane * diffStart[zP], MPI_C_DOUBLE_COMPLEX,
-                         zP, 0, zAxisComm);
-            }
-            if (zAxisrank == zP)
-            {
-                MPI_Status stat;
-                MPI_Recv(outputData, numElesInGlobalPlane * diffStart[zP], MPI_C_DOUBLE_COMPLEX,
-                         zP - 1, 0, zAxisComm, &stat);
-            }
-        }
-        else if (diffStart[zP] < 0)
-        { // processor[rank] receive some plane data from processor[rank - 1]
-            if (zAxisrank == zP - 1)
-            {
-                MPI_Status stat;
-                MPI_Recv(outputData + numElesInGlobalPlane * FFTLength, -numElesInGlobalPlane * diffStart[zP], MPI_C_DOUBLE_COMPLEX,
-                         zP, 0, zAxisComm, &stat);
-            }
-            if (zAxisrank == zP)
-            {
-                MPI_Send(FFTOutput, -numElesInGlobalPlane * diffStart[zP], MPI_C_DOUBLE_COMPLEX,
-                         zP - 1, 0, zAxisComm);
-            }
-        }
-    }
-
-    free(diffStart);
-}
-
-void parallel_FFT(double _Complex *inputDataRealSpace, double _Complex *outputDataReciSpace, int *gridsizes, int *zAxis_Starts, int DMnz, int q, MPI_Comm zAxisComm)
+void parallel_FFT(double _Complex *inputDataRealSpace, double _Complex *outputDataReciSpace, int *gridsizes, int DMnz, int q, MPI_Comm zAxisComm)
 {
 #if defined(USE_MKL) // use MKL CDFT
     int rank;
@@ -569,23 +445,26 @@ void parallel_FFT(double _Complex *inputDataRealSpace, double _Complex *outputDa
 
     // initializa parallel FFT
     DFTI_DESCRIPTOR_DM_HANDLE desc = NULL;
-    MKL_LONG localArrayLength, lengthK, startK;
+    MKL_LONG localArrayLength;
     MKL_LONG dim_sizes[3] = {gridsizes[2], gridsizes[1], gridsizes[0]};
     DftiCreateDescriptorDM(zAxisComm, &desc, DFTI_DOUBLE, DFTI_COMPLEX, 3, dim_sizes);
     DftiGetValueDM(desc, CDFT_LOCAL_SIZE, &localArrayLength);
-    DftiGetValueDM(desc, CDFT_LOCAL_NX, &lengthK);
-    DftiGetValueDM(desc, CDFT_LOCAL_X_START, &startK);
-    int lengthKint = lengthK;
-    int startKint = startK;
+    // MKL_LONG lengthK, startK;
+    // DftiGetValueDM(desc, CDFT_LOCAL_NX, &lengthK);
+    // DftiGetValueDM(desc, CDFT_LOCAL_X_START, &startK);
+    // int lengthKint = lengthK;
+    // int startKint = startK;
 
     // compose FFT input to prevent the inconsistency division on Z axis
     double _Complex *FFTInput = (double _Complex *)malloc(sizeof(double _Complex) * (localArrayLength));
     double _Complex *FFTOutput = (double _Complex *)malloc(sizeof(double _Complex) * (localArrayLength));
-    int *allStartK = (int *)malloc(sizeof(int) * sizeZcomm);
-    int *allLengthK = (int *)malloc(sizeof(int) * sizeZcomm);
-    MPI_Allgather(&startKint, 1, MPI_INT, allStartK, 1, MPI_INT, zAxisComm);
-    MPI_Allgather(&lengthKint, 1, MPI_INT, allLengthK, 1, MPI_INT, zAxisComm);
-    compose_FFTInput(gridsizes, DMnz, zAxis_Starts, FFTInput, allStartK, inputDataRealSpace, zAxisComm);
+    assert(FFTInput != NULL);
+    assert(FFTOutput != NULL);
+
+    // the decomposition of space in zAxisComm should be consistent with the data distribution designated by DFT module. DMnz == lengthK
+    // Relative code can be found in function vdWDF_Setup_Comms, file vdWDFparallelization.c.
+    int numElesInGlobalPlane = gridsizes[0] * gridsizes[1];
+    memcpy(FFTInput, inputDataRealSpace, sizeof(double _Complex) * numElesInGlobalPlane * DMnz);
 
     // make parallel FFT
     /* Set that we want out-of-place transform (default is DFTI_INPLACE) */
@@ -594,14 +473,13 @@ void parallel_FFT(double _Complex *inputDataRealSpace, double _Complex *outputDa
     DftiCommitDescriptorDM(desc);
     DftiComputeForwardDM(desc, FFTInput, FFTOutput);
 
-    // compose FFT output to prevent the inconsistency division on Z axis
-    compose_FFTOutput(gridsizes, DMnz, zAxis_Starts, FFTOutput, allStartK, allLengthK, outputDataReciSpace, zAxisComm);
+    // the decomposition of space in zAxisComm should be consistent with the data distribution designated by DFT module. DMnz == lengthK
+    // Relative code can be found in function vdWDF_Setup_Comms, file vdWDFparallelization.c.
+    memcpy(outputDataReciSpace, FFTOutput, sizeof(double _Complex) * numElesInGlobalPlane * DMnz);
 
     DftiFreeDescriptorDM(&desc);
     free(FFTInput);
     free(FFTOutput);
-    free(allStartK);
-    free(allLengthK);
 
 #elif defined(USE_FFTW) // use FFTW if MKL is not used
 
@@ -620,33 +498,35 @@ void parallel_FFT(double _Complex *inputDataRealSpace, double _Complex *outputDa
     localArrayLength = fftw_mpi_local_size_3d(N0, N1, N2, zAxisComm, &lengthK, &startK);
     FFTInput = fftw_alloc_complex(localArrayLength);
     FFTOutput = fftw_alloc_complex(localArrayLength);
-    // compose FFT input to prevent the inconsistency division on Z axis
-    int lengthKint = lengthK;
-    int startKint = startK;
-    int *allStartK = (int *)malloc(sizeof(int) * sizeZcomm);
-    int *allLengthK = (int *)malloc(sizeof(int) * sizeZcomm);
-    MPI_Allgather(&startKint, 1, MPI_INT, allStartK, 1, MPI_INT, zAxisComm);
-    MPI_Allgather(&lengthKint, 1, MPI_INT, allLengthK, 1, MPI_INT, zAxisComm);
+    // // compose FFT input to prevent the inconsistency division on Z axis
+    // int lengthKint = lengthK;
+    // int startKint = startK;
     // printf("rank %d, DMnz %d\n", rank, DMnz);
     // if (rank == 0) {
     //     for (int i = 0; i < sizeZcomm; i++) {
-    //         printf("rank %d, zAxis_Starts %d, startK %d, lengthK %d\n", i, zAxis_Starts[i], allStartK[i], allLengthK[i]);
+    //         printf("rank %d, startK %d, lengthK %d\n", i, allStartK[i], allLengthK[i]);
     //     }
     // }
-    compose_FFTInput(gridsizes, DMnz, zAxis_Starts, FFTInput, allStartK, inputDataRealSpace, zAxisComm);
+
+    // the decomposition of space in zAxisComm should be consistent with the DFT module. DMnz == lengthK
+    // Relative code can be found in function vdWDF_Setup_Comms, file vdWDFparallelization.c.
+    int numElesInGlobalPlane = gridsizes[0] * gridsizes[1];
+    memcpy(FFTInput, inputDataRealSpace, sizeof(double _Complex) * numElesInGlobalPlane * DMnz);
+
     /* create plan for in-place forward DFT */
     plan = fftw_mpi_plan_dft_3d(N0, N1, N2, FFTInput, FFTOutput, zAxisComm, FFTW_FORWARD, FFTW_ESTIMATE);
     fftw_execute(plan);
-    // compose FFT output to prevent the inconsistency division on Z axis
-    compose_FFTOutput(gridsizes, DMnz, zAxis_Starts, FFTOutput, allStartK, allLengthK, outputDataReciSpace, zAxisComm);
+    // // compose FFT output to prevent the inconsistency division on Z axis
+
+    // the decomposition of space in zAxisComm is consistent with the DFT module. Relative code can be found in 
+    // function vdWDF_Setup_Comms, file vdWDFparallelization.c.
+    memcpy(outputDataReciSpace, FFTOutput, sizeof(double _Complex) * numElesInGlobalPlane * DMnz);
 
     fftw_free(FFTInput);
     fftw_free(FFTOutput);
     fftw_destroy_plan(plan);
     fftw_mpi_cleanup();
 
-    free(allStartK);
-    free(allLengthK);
 #endif
 }
 /*
@@ -662,6 +542,7 @@ void theta_generate_FT(SPARC_OBJ *pSPARC, double *rho)
     MPI_Comm_rank(pSPARC->dmcomm_phi, &rank);
     int size;
     MPI_Comm_size(pSPARC->dmcomm_phi, &size);
+    
     int DMnx, DMny, DMnz, DMnd;
     DMnx = pSPARC->DMVertices[1] - pSPARC->DMVertices[0] + 1;
     DMny = pSPARC->DMVertices[3] - pSPARC->DMVertices[2] + 1;
@@ -680,10 +561,7 @@ void theta_generate_FT(SPARC_OBJ *pSPARC, double *rho)
     phiDims[0] = pSPARC->npNdx_phi;
     phiDims[1] = pSPARC->npNdy_phi;
     phiDims[2] = pSPARC->npNdz_phi;
-    int zAxisDims[3];
-    zAxisDims[0] = 1;
-    zAxisDims[1] = 1;
-    zAxisDims[2] = pSPARC->npNdz_phi;
+    int *zAxisDims = pSPARC->newzAxisDims;
     double *theta = (double *)malloc(sizeof(double) * DMnd); // save theta functions in real space
     double *thetaFTreal = (double *)malloc(sizeof(double) * DMnd);
     double *thetaFTimag = (double *)malloc(sizeof(double) * DMnd);
@@ -694,58 +572,57 @@ void theta_generate_FT(SPARC_OBJ *pSPARC, double *rho)
     double *gatheredThetaFFT_real = NULL;
     double *gatheredThetaFFT_imag = NULL;
     int igrid, rigrid;
+    int FFTrank = -1; int FFTsize = -1; int FFTDMnz = -1;
     if (pSPARC->zAxisComm != MPI_COMM_NULL)
     { // the processors on z axis (0, 0, z) receive the theta vectors from all other processors (x, y, z) on its z plane
         // printf("rank %d. pSPARC->zAxisComm not NULL!\n", rank);
-        gatheredTheta = (double *)malloc(sizeof(double) * gridsizes[0] * gridsizes[1] * DMnz);
-        gatheredThetaCompl = (double _Complex *)malloc(sizeof(double _Complex) * gridsizes[0] * gridsizes[1] * DMnz);
-        gatheredThetaFFT = (double _Complex *)malloc(sizeof(double _Complex) * gridsizes[0] * gridsizes[1] * DMnz);
-        gatheredThetaFFT_real = (double *)malloc(sizeof(double) * gridsizes[0] * gridsizes[1] * DMnz);
-        gatheredThetaFFT_imag = (double *)malloc(sizeof(double) * gridsizes[0] * gridsizes[1] * DMnz);
+        MPI_Comm_rank(pSPARC->zAxisComm, &FFTrank);
+        MPI_Comm_size(pSPARC->zAxisComm, &FFTsize);
+        FFTDMnz = pSPARC->zAxisVertices[5] - pSPARC->zAxisVertices[4] + 1;
+        gatheredTheta = (double *)malloc(sizeof(double) * gridsizes[0] * gridsizes[1] * FFTDMnz);
+        gatheredThetaCompl = (double _Complex *)malloc(sizeof(double _Complex) * gridsizes[0] * gridsizes[1] * FFTDMnz);
+        gatheredThetaFFT = (double _Complex *)malloc(sizeof(double _Complex) * gridsizes[0] * gridsizes[1] * FFTDMnz);
+        gatheredThetaFFT_real = (double *)malloc(sizeof(double) * gridsizes[0] * gridsizes[1] * FFTDMnz);
+        gatheredThetaFFT_imag = (double *)malloc(sizeof(double) * gridsizes[0] * gridsizes[1] * FFTDMnz);
         assert(gatheredTheta != NULL);
         assert(gatheredThetaCompl != NULL);
         assert(gatheredThetaFFT != NULL);
         assert(gatheredThetaFFT_real != NULL);
         assert(gatheredThetaFFT_imag != NULL);
     }
-    int *zAxis_Starts = (int *)malloc(sizeof(int) * (pSPARC->npNdz_phi));
-
-    for (int z = 0; z < pSPARC->npNdz_phi; z++)
-    {
-        zAxis_Starts[z] = block_decompose_nstart(gridsizes[2], pSPARC->npNdz_phi, z);
-    }
+    
     for (int q1 = 0; q1 < nqs; q1++)
     {
         for (igrid = 0; igrid < DMnd; igrid++)
         {
             theta[igrid] = ps[q1][igrid] * rho[igrid]; // compute theta vectors, ps*rho
         }
-        D2D(&(pSPARC->gatherThetasSender), &(pSPARC->gatherThetasRecvr), gridsizes,
+        D2D_AnyDMVert(&(pSPARC->gatherThetasSender), &(pSPARC->gatherThetasRecvr), gridsizes,
             pSPARC->DMVertices, theta,
             pSPARC->zAxisVertices, gatheredTheta,
-            pSPARC->dmcomm_phi, phiDims, pSPARC->zAxisComm, zAxisDims, MPI_COMM_WORLD);
+            pSPARC->dmcomm_phi, phiDims, pSPARC->zAxisComm, zAxisDims, pSPARC->dmcomm_phi);
         // printf("rank %d. D2D for q1 %d finished!\n", rank, q1);
         if (pSPARC->zAxisComm != MPI_COMM_NULL)
         { // the processors on z axis (0, 0, z) receive the theta vectors from all other processors (x, y, z) on its z plane
-            for (rigrid = 0; rigrid < gridsizes[0] * gridsizes[1] * DMnz; rigrid++)
+            for (rigrid = 0; rigrid < gridsizes[0] * gridsizes[1] * FFTDMnz; rigrid++)
             {
                 gatheredThetaCompl[rigrid] = (double _Complex)gatheredTheta[rigrid];
             }
-            parallel_FFT(gatheredThetaCompl, gatheredThetaFFT, gridsizes, zAxis_Starts, DMnz, q1, pSPARC->zAxisComm);
-            for (rigrid = 0; rigrid < gridsizes[0] * gridsizes[1] * DMnz; rigrid++)
+            parallel_FFT(gatheredThetaCompl, gatheredThetaFFT, gridsizes, FFTDMnz, q1, pSPARC->zAxisComm);
+            for (rigrid = 0; rigrid < gridsizes[0] * gridsizes[1] * FFTDMnz; rigrid++)
             {
                 gatheredThetaFFT_real[rigrid] = creal(gatheredThetaFFT[rigrid]);
                 gatheredThetaFFT_imag[rigrid] = cimag(gatheredThetaFFT[rigrid]);
             }
         }
-        D2D(&(pSPARC->scatterThetasSender), &(pSPARC->scatterThetasRecvr), gridsizes, // scatter the real part of theta results from the processors on z axis (0, 0, z) to all other processors
+        D2D_AnyDMVert(&(pSPARC->scatterThetasSender), &(pSPARC->scatterThetasRecvr), gridsizes, // scatter the real part of theta results from the processors on z axis (0, 0, z) to all other processors
             pSPARC->zAxisVertices, gatheredThetaFFT_real,
             pSPARC->DMVertices, thetaFTreal,
-            pSPARC->zAxisComm, zAxisDims, pSPARC->dmcomm_phi, phiDims, MPI_COMM_WORLD);
-        D2D(&(pSPARC->scatterThetasSender), &(pSPARC->scatterThetasRecvr), gridsizes, // scatter the imaginary part of theta results from the processors on z axis (0, 0, z) to all other processors
+            pSPARC->zAxisComm, zAxisDims, pSPARC->dmcomm_phi, phiDims, pSPARC->dmcomm_phi);
+        D2D_AnyDMVert(&(pSPARC->scatterThetasSender), &(pSPARC->scatterThetasRecvr), gridsizes, // scatter the imaginary part of theta results from the processors on z axis (0, 0, z) to all other processors
             pSPARC->zAxisVertices, gatheredThetaFFT_imag,
             pSPARC->DMVertices, thetaFTimag,
-            pSPARC->zAxisComm, zAxisDims, pSPARC->dmcomm_phi, phiDims, MPI_COMM_WORLD);
+            pSPARC->zAxisComm, zAxisDims, pSPARC->dmcomm_phi, phiDims, pSPARC->dmcomm_phi);
         for (rigrid = 0; rigrid < DMnd; rigrid++)
         {
             thetaFTs[q1][rigrid] = thetaFTreal[rigrid] + thetaFTimag[rigrid] * I;
@@ -760,7 +637,6 @@ void theta_generate_FT(SPARC_OBJ *pSPARC, double *rho)
     }
 
     free(theta);
-    free(zAxis_Starts);
     free(thetaFTreal);
     free(thetaFTimag);
     if (pSPARC->zAxisComm != MPI_COMM_NULL)
@@ -887,7 +763,7 @@ Functions above are related to generating thetas (ps*rho) and integrating energy
 /*
 Functions below are related to generating u vectors, transforming them to real space and computing vdW-DF potential.
 */
-void parallel_iFFT(double _Complex *inputDataReciSpace, double _Complex *outputDataRealSpace, int *gridsizes, int *zAxis_Starts, int DMnz, int q, MPI_Comm zAxisComm)
+void parallel_iFFT(double _Complex *inputDataReciSpace, double _Complex *outputDataRealSpace, int *gridsizes, int DMnz, int q, MPI_Comm zAxisComm)
 {
 #if defined(USE_MKL) // use MKL CDFT
     int rank;
@@ -896,24 +772,25 @@ void parallel_iFFT(double _Complex *inputDataReciSpace, double _Complex *outputD
     MPI_Comm_size(zAxisComm, &sizeZcomm);
     // initializa parallel iFFT
     DFTI_DESCRIPTOR_DM_HANDLE desc = NULL;
-    MKL_LONG localArrayLength, lengthK, startK;
+    MKL_LONG localArrayLength;
     MKL_LONG dim_sizes[3] = {gridsizes[2], gridsizes[1], gridsizes[0]};
     DftiCreateDescriptorDM(zAxisComm, &desc, DFTI_DOUBLE, DFTI_COMPLEX, 3, dim_sizes);
     DftiGetValueDM(desc, CDFT_LOCAL_SIZE, &localArrayLength);
-    DftiGetValueDM(desc, CDFT_LOCAL_NX, &lengthK);
-    DftiGetValueDM(desc, CDFT_LOCAL_X_START, &startK);
-    int lengthKint = lengthK;
-    int startKint = startK;
+    // MKL_LONG lengthK, startK;
+    // DftiGetValueDM(desc, CDFT_LOCAL_NX, &lengthK);
+    // DftiGetValueDM(desc, CDFT_LOCAL_X_START, &startK);
+    // int lengthKint = lengthK;
+    // int startKint = startK;
     // compose iFFT input to prevent the inconsistency division on Z axis
     double _Complex *iFFTInput = (double _Complex *)malloc(sizeof(double _Complex) * (localArrayLength));
     double _Complex *iFFTOutput = (double _Complex *)malloc(sizeof(double _Complex) * (localArrayLength));
     assert(iFFTInput != NULL);
     assert(iFFTOutput != NULL);
-    int *allStartK = (int *)malloc(sizeof(int) * sizeZcomm);
-    int *allLengthK = (int *)malloc(sizeof(int) * sizeZcomm);
-    MPI_Allgather(&startKint, 1, MPI_INT, allStartK, 1, MPI_INT, zAxisComm);
-    MPI_Allgather(&lengthKint, 1, MPI_INT, allLengthK, 1, MPI_INT, zAxisComm);
-    compose_FFTInput(gridsizes, DMnz, zAxis_Starts, iFFTInput, allStartK, inputDataReciSpace, zAxisComm);
+
+    // the decomposition of space in zAxisComm should be consistent with the data distribution designated by DFT module. DMnz == lengthK
+    // Relative code can be found in function vdWDF_Setup_Comms, file vdWDFparallelization.c.
+    int numElesInGlobalPlane = gridsizes[0] * gridsizes[1];
+    memcpy(iFFTInput, inputDataReciSpace, sizeof(double _Complex) * numElesInGlobalPlane * DMnz);
     // make parallel FFT
     /* Set that we want out-of-place transform (default is DFTI_INPLACE) */
     DftiSetValueDM(desc, DFTI_PLACEMENT, DFTI_NOT_INPLACE);
@@ -921,13 +798,13 @@ void parallel_iFFT(double _Complex *inputDataReciSpace, double _Complex *outputD
     DftiCommitDescriptorDM(desc);
     DftiComputeBackwardDM(desc, iFFTInput, iFFTOutput);
 
-    compose_FFTOutput(gridsizes, DMnz, zAxis_Starts, iFFTOutput, allStartK, allLengthK, outputDataRealSpace, zAxisComm);
+    // the decomposition of space in zAxisComm should be consistent with the data distribution designated by DFT module. DMnz == lengthK
+    // Relative code can be found in function vdWDF_Setup_Comms, file vdWDFparallelization.c.
+    memcpy(outputDataRealSpace, iFFTOutput, sizeof(double _Complex) * numElesInGlobalPlane * DMnz);
 
     DftiFreeDescriptorDM(&desc);
     free(iFFTInput);
     free(iFFTOutput);
-    free(allStartK);
-    free(allLengthK);
 
 #elif defined(USE_FFTW) // use FFTW if MKL is not used
 
@@ -946,26 +823,25 @@ void parallel_iFFT(double _Complex *inputDataReciSpace, double _Complex *outputD
     iFFTInput = fftw_alloc_complex(localArrayLength);
     iFFTOutput = fftw_alloc_complex(localArrayLength);
     // compose iFFT input to prevent the inconsistency division on Z axis
-    int lengthKint = lengthK;
-    int startKint = startK;
-    int *allStartK = (int *)malloc(sizeof(int) * sizeZcomm);
-    int *allLengthK = (int *)malloc(sizeof(int) * sizeZcomm);
-    MPI_Allgather(&startKint, 1, MPI_INT, allStartK, 1, MPI_INT, zAxisComm);
-    MPI_Allgather(&lengthKint, 1, MPI_INT, allLengthK, 1, MPI_INT, zAxisComm);
-    compose_FFTInput(gridsizes, DMnz, zAxis_Starts, iFFTInput, allStartK, inputDataReciSpace, zAxisComm);
+    // int lengthKint = lengthK;
+    // int startKint = startK;
+
+    // the decomposition of space in zAxisComm should be consistent with the data distribution designated by DFT module. DMnz == lengthK
+    // Relative code can be found in function vdWDF_Setup_Comms, file vdWDFparallelization.c.
+    int numElesInGlobalPlane = gridsizes[0] * gridsizes[1];
+    memcpy(iFFTInput, inputDataReciSpace, sizeof(double _Complex) * numElesInGlobalPlane * DMnz);
     /* create plan for out-place backward DFT */
     plan = fftw_mpi_plan_dft_3d(N0, N1, N2, iFFTInput, iFFTOutput, zAxisComm, FFTW_BACKWARD, FFTW_ESTIMATE);
     fftw_execute(plan);
 
-    compose_FFTOutput(gridsizes, DMnz, zAxis_Starts, iFFTOutput, allStartK, allLengthK, outputDataRealSpace, zAxisComm);
+
+    memcpy(outputDataRealSpace, iFFTOutput, sizeof(double _Complex) * numElesInGlobalPlane * DMnz);
 
     fftw_free(iFFTInput);
     fftw_free(iFFTOutput);
     fftw_destroy_plan(plan);
     fftw_mpi_cleanup();
 
-    free(allStartK);
-    free(allLengthK);
 #endif
 }
 
@@ -977,6 +853,7 @@ void u_generate_iFT(SPARC_OBJ *pSPARC)
     MPI_Comm_rank(pSPARC->dmcomm_phi, &rank);
     int size;
     MPI_Comm_size(pSPARC->dmcomm_phi, &size);
+
     int DMnx, DMny, DMnz, DMnd;
     DMnx = pSPARC->DMVertices[1] - pSPARC->DMVertices[0] + 1;
     DMny = pSPARC->DMVertices[3] - pSPARC->DMVertices[2] + 1;
@@ -990,10 +867,7 @@ void u_generate_iFT(SPARC_OBJ *pSPARC)
     phiDims[0] = pSPARC->npNdx_phi;
     phiDims[1] = pSPARC->npNdy_phi;
     phiDims[2] = pSPARC->npNdz_phi;
-    int zAxisDims[3];
-    zAxisDims[0] = 1;
-    zAxisDims[1] = 1;
-    zAxisDims[2] = pSPARC->npNdz_phi;
+    int *zAxisDims = pSPARC->newzAxisDims;
     int nqs = pSPARC->vdWDFnqs;
     double _Complex **uFTs = pSPARC->vdWDFuFTs;
     double **u = pSPARC->vdWDFu;
@@ -1005,24 +879,22 @@ void u_generate_iFT(SPARC_OBJ *pSPARC)
     double _Complex *gathereduFT = NULL;
     double _Complex *gathereduCompl = NULL;
     double *gatheredu = NULL;
+    int FFTrank = -1; int FFTsize = -1; int FFTDMnz = -1;
     if (pSPARC->zAxisComm != MPI_COMM_NULL)
     {
-        gathereduFT_real = (double *)malloc(sizeof(double) * gridsizes[0] * gridsizes[1] * DMnz);
-        gathereduFT_imag = (double *)malloc(sizeof(double) * gridsizes[0] * gridsizes[1] * DMnz);
-        gathereduFT = (double _Complex *)malloc(sizeof(double _Complex) * gridsizes[0] * gridsizes[1] * DMnz);
-        gathereduCompl = (double _Complex *)malloc(sizeof(double _Complex) * gridsizes[0] * gridsizes[1] * DMnz);
-        gatheredu = (double *)malloc(sizeof(double) * gridsizes[0] * gridsizes[1] * DMnz);
+        MPI_Comm_rank(pSPARC->zAxisComm, &FFTrank);
+        MPI_Comm_size(pSPARC->zAxisComm, &FFTsize);
+        FFTDMnz = pSPARC->zAxisVertices[5] - pSPARC->zAxisVertices[4] + 1;
+        gathereduFT_real = (double *)malloc(sizeof(double) * gridsizes[0] * gridsizes[1] * FFTDMnz);
+        gathereduFT_imag = (double *)malloc(sizeof(double) * gridsizes[0] * gridsizes[1] * FFTDMnz);
+        gathereduFT = (double _Complex *)malloc(sizeof(double _Complex) * gridsizes[0] * gridsizes[1] * FFTDMnz);
+        gathereduCompl = (double _Complex *)malloc(sizeof(double _Complex) * gridsizes[0] * gridsizes[1] * FFTDMnz);
+        gatheredu = (double *)malloc(sizeof(double) * gridsizes[0] * gridsizes[1] * FFTDMnz);
         assert(gathereduFT_real != NULL);
         assert(gathereduFT_imag != NULL);
         assert(gathereduFT != NULL);
         assert(gathereduCompl != NULL);
         assert(gatheredu != NULL);
-    }
-    int *zAxis_Starts = (int *)malloc(sizeof(int) * (pSPARC->npNdz_phi));
-
-    for (int z = 0; z < pSPARC->npNdz_phi; z++)
-    {
-        zAxis_Starts[z] = block_decompose_nstart(gridsizes[2], pSPARC->npNdz_phi, z);
     }
 
     for (q1 = 0; q1 < nqs; q1++)
@@ -1032,30 +904,30 @@ void u_generate_iFT(SPARC_OBJ *pSPARC)
             uFTreal[rigrid] = creal(uFTs[q1][rigrid]);
             uFTimag[rigrid] = cimag(uFTs[q1][rigrid]);
         }
-        D2D(&(pSPARC->gatherThetasSender), &(pSPARC->gatherThetasRecvr), gridsizes,
+        D2D_AnyDMVert(&(pSPARC->gatherThetasSender), &(pSPARC->gatherThetasRecvr), gridsizes,
             pSPARC->DMVertices, uFTreal,
             pSPARC->zAxisVertices, gathereduFT_real,
-            pSPARC->dmcomm_phi, phiDims, pSPARC->zAxisComm, zAxisDims, MPI_COMM_WORLD);
-        D2D(&(pSPARC->gatherThetasSender), &(pSPARC->gatherThetasRecvr), gridsizes,
+            pSPARC->dmcomm_phi, phiDims, pSPARC->zAxisComm, zAxisDims, pSPARC->dmcomm_phi);
+        D2D_AnyDMVert(&(pSPARC->gatherThetasSender), &(pSPARC->gatherThetasRecvr), gridsizes,
             pSPARC->DMVertices, uFTimag,
             pSPARC->zAxisVertices, gathereduFT_imag,
-            pSPARC->dmcomm_phi, phiDims, pSPARC->zAxisComm, zAxisDims, MPI_COMM_WORLD);
+            pSPARC->dmcomm_phi, phiDims, pSPARC->zAxisComm, zAxisDims, pSPARC->dmcomm_phi);
         if (pSPARC->zAxisComm != MPI_COMM_NULL)
         {
-            for (rigrid = 0; rigrid < gridsizes[0] * gridsizes[1] * DMnz; rigrid++)
+            for (rigrid = 0; rigrid < gridsizes[0] * gridsizes[1] * FFTDMnz; rigrid++)
             {
                 gathereduFT[rigrid] = gathereduFT_real[rigrid] + gathereduFT_imag[rigrid] * I;
             }
-            parallel_iFFT(gathereduFT, gathereduCompl, gridsizes, zAxis_Starts, DMnz, q1, pSPARC->zAxisComm);
-            for (rigrid = 0; rigrid < gridsizes[0] * gridsizes[1] * DMnz; rigrid++)
+            parallel_iFFT(gathereduFT, gathereduCompl, gridsizes, FFTDMnz, q1, pSPARC->zAxisComm);
+            for (rigrid = 0; rigrid < gridsizes[0] * gridsizes[1] * FFTDMnz; rigrid++)
             {
                 gatheredu[rigrid] = creal(gathereduCompl[rigrid]); // MKL original iFFT functions do not divide the iFFT results by N
             }
         }
-        D2D(&(pSPARC->scatterThetasSender), &(pSPARC->scatterThetasRecvr), gridsizes, // scatter the real part of theta results from the processors on z axis (0, 0, z) to all other processors
+        D2D_AnyDMVert(&(pSPARC->scatterThetasSender), &(pSPARC->scatterThetasRecvr), gridsizes, // scatter the real part of theta results from the processors on z axis (0, 0, z) to all other processors
             pSPARC->zAxisVertices, gatheredu,
             pSPARC->DMVertices, u[q1],
-            pSPARC->zAxisComm, zAxisDims, pSPARC->dmcomm_phi, phiDims, MPI_COMM_WORLD);
+            pSPARC->zAxisComm, zAxisDims, pSPARC->dmcomm_phi, phiDims, pSPARC->dmcomm_phi);
         // if ((pSPARC->countPotentialCalculate == 0) && (q1 == 5) && (rank == size - 1)) { // only output result in 1st step
         //     int localIndex1D = domain_index1D(1, 1, 1, DMnx, DMny, DMnz);
         //     fprintf(pSPARC->vdWDFOutput, "rank %d, at 1st SCF u[5][(1, 1, 1)]=globalu[5][(%d, %d, %d)] = %.5e\n", rank,
@@ -1066,7 +938,6 @@ void u_generate_iFT(SPARC_OBJ *pSPARC)
 
     free(uFTreal);
     free(uFTimag);
-    free(zAxis_Starts);
     if (pSPARC->zAxisComm != MPI_COMM_NULL)
     {
         free(gathereduFT_real);
@@ -1130,9 +1001,9 @@ void vdWDF_potential(SPARC_OBJ *pSPARC)
             Dh_1 = (double *)malloc(sizeof(double) * DMnd);
             Dh_2 = (double *)malloc(sizeof(double) * DMnd);
             Dh_3 = (double *)malloc(sizeof(double) * DMnd);
-            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 1, 0.0, h, Dh_1, 0, pSPARC->dmcomm_phi); // nonCart direction
-            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 1, 0.0, h, Dh_2, 1, pSPARC->dmcomm_phi);
-            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 1, 0.0, h, Dh_3, 2, pSPARC->dmcomm_phi);
+            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 1, 0.0, h, DMnd, Dh_1, DMnd, 0, pSPARC->dmcomm_phi); // nonCart direction
+            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 1, 0.0, h, DMnd, Dh_2, DMnd, 1, pSPARC->dmcomm_phi);
+            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 1, 0.0, h, DMnd, Dh_3, DMnd, 2, pSPARC->dmcomm_phi);
             for (igrid = 0; igrid < DMnd; igrid++)
             {
                 Dh[igrid] = pSPARC->gradT[0 + direction] * Dh_1[igrid] + pSPARC->gradT[3 + direction] * Dh_2[igrid] + pSPARC->gradT[6 + direction] * Dh_3[igrid];
@@ -1143,7 +1014,7 @@ void vdWDF_potential(SPARC_OBJ *pSPARC)
         }
         else
         {                                                                                                         // orthogonal cell
-            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 1, 0.0, h, Dh, direction, pSPARC->dmcomm_phi); // Soler's paper (10), diffential coefficient matrix
+            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 1, 0.0, h, DMnd, Dh, DMnd, direction, pSPARC->dmcomm_phi); // Soler's paper (10), diffential coefficient matrix
         }
         for (igrid = 0; igrid < DMnd; igrid++)
         {
@@ -1208,9 +1079,9 @@ void spin_vdWDF_potential(SPARC_OBJ *pSPARC)
         }
         if (pSPARC->cell_typ > 10 && pSPARC->cell_typ < 20)
         {                                                                                                   // non-orthogonal cell
-            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 2, 0.0, h, Dh_1, 0, pSPARC->dmcomm_phi); // nonCart direction
-            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 2, 0.0, h, Dh_2, 1, pSPARC->dmcomm_phi);
-            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 2, 0.0, h, Dh_3, 2, pSPARC->dmcomm_phi);
+            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 2, 0.0, h, DMnd, Dh_1, DMnd, 0, pSPARC->dmcomm_phi); // nonCart direction
+            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 2, 0.0, h, DMnd, Dh_2, DMnd, 1, pSPARC->dmcomm_phi);
+            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 2, 0.0, h, DMnd, Dh_3, DMnd, 2, pSPARC->dmcomm_phi);
             for (i = 0; i < 2 * DMnd; i++)
             {
                 Dh[i] = pSPARC->gradT[0 + direction] * Dh_1[i] + pSPARC->gradT[3 + direction] * Dh_2[i] + pSPARC->gradT[6 + direction] * Dh_3[i];
@@ -1218,7 +1089,7 @@ void spin_vdWDF_potential(SPARC_OBJ *pSPARC)
         }
         else
         {                                                                                                         // orthogonal cell
-            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 2, 0.0, h, Dh, direction, pSPARC->dmcomm_phi); // Soler's paper (10), diffential coefficient matrix
+            Gradient_vectors_dir(pSPARC, DMnd, pSPARC->DMVertices, 2, 0.0, h, DMnd, Dh, DMnd, direction, pSPARC->dmcomm_phi); // Soler's paper (10), diffential coefficient matrix
         }
         for (i = 0; i < 2 * DMnd; i++)
         {
@@ -1283,4 +1154,38 @@ void Calculate_nonLinearCorr_E_V_SvdWDF(SPARC_OBJ *pSPARC, double *rho)
 void Add_Exc_vdWDF(SPARC_OBJ *pSPARC)
 { // add vdW_DF energy into the total xc energy
     pSPARC->Exc += pSPARC->vdWDFenergy;
+}
+
+void find_folder_route(SPARC_OBJ *pSPARC, char *folderRoute) { // used for returning the folder route of the input files
+    strncpy(folderRoute, pSPARC->filename, L_STRING);
+    int indexEndFolderRoute = 0;
+    while (folderRoute[indexEndFolderRoute] != '\0') {
+        indexEndFolderRoute++;
+    } // get the length of the char filename
+    while ((indexEndFolderRoute > -1) && (folderRoute[indexEndFolderRoute] != '/')) {
+        indexEndFolderRoute--;
+    } // find the last '/'. If there is no '/', indexEndFolderRoute should be at the beginning
+    folderRoute[indexEndFolderRoute + 1] = '\0'; // cut the string. Now it contains only the folder position
+}
+
+void print_variables(double *variable, char *outputFileName, int Nx, int Ny, int Nz) {
+    printf("begin printing variable\n");
+    FILE *outputFile = NULL;
+    outputFile = fopen(outputFileName,"w");
+    int xIndex, yIndex, zIndex;
+    int globalIndex = 0;
+    fprintf(outputFile, "%d %d %d\n", Nx, Ny, Nz);
+    for (zIndex = 0; zIndex < Nz; zIndex++) {
+        for (yIndex = 0; yIndex < Ny; yIndex++) {
+            fprintf(outputFile, "%d %d\n", yIndex, zIndex);
+            for (xIndex = 0; xIndex < Nx; xIndex++) {
+                if ((xIndex + 1) % 4 == 0 || (xIndex == Nx - 1)) // new line every 4 values
+                    fprintf(outputFile, "%12.9f\n", variable[globalIndex]);
+                else
+                    fprintf(outputFile, "%12.9f ", variable[globalIndex]);
+                globalIndex++;
+            }
+        }
+    }
+    fclose(outputFile);
 }

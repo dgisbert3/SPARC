@@ -27,7 +27,7 @@
 #include "electronDensity.h"
 #include "eigenSolver.h"
 #include "eigenSolverKpt.h" 
-#include "mixing.h" // AndersonExtrapolation
+#include "mixing.h"
 #include "occupation.h"
 #include "energy.h"
 #include "tools.h"
@@ -40,6 +40,7 @@
 #include "exactExchange.h"
 #include "d3correction.h"
 #include "d3forceStress.h"
+#include "mGGAtauTransferTauVxc.h"
 #include "spinOrbitCoupling.h"
 #include "sq.h"
 #include "sqFinalization.h"
@@ -56,7 +57,7 @@
 
 #define max(x,y) ((x)>(y)?(x):(y))
 #define min(x,y) ((x)<(y)?(x):(y))
-
+#define TEMP_TOL 1e-12
 
 /**
  * @brief   Calculate the ground state energy and forces for fixed atom positions.  
@@ -83,21 +84,21 @@ void Calculate_electronicGroundState(SPARC_OBJ *pSPARC) {
         else
             SCF_ind = 1;
         if (pSPARC->REFERENCE_CUTOFF > 0.5*nn) {
-            printf("\nWARNING: REFERENCE _CUTOFF (%.6f Bohr) > 1/2 nn (nearest neighbor) distance (%.6f Bohr) in SCF#%d\n",
+            printf("\nWARNING: REFERENCE_CUTOFF (%.6f Bohr) > 1/2 nn (nearest neighbor) distance (%.6f Bohr) in SCF#%d\n",
                         pSPARC->REFERENCE_CUTOFF, 0.5*nn,  SCF_ind);
         }
         if (pSPARC->REFERENCE_CUTOFF < pSPARC->delta_x ||
             pSPARC->REFERENCE_CUTOFF < pSPARC->delta_y ||
             pSPARC->REFERENCE_CUTOFF < pSPARC->delta_z ) {
-            printf("\nWARNING: REFERENCE _CUTOFF (%.6f Bohr) < MESH_SPACING (dx %.6f Bohr, dy %.6f Bohr, dz %.6f Bohr) in SCF#%d\n",
+            printf("\nWARNING: REFERENCE_CUTOFF (%.6f Bohr) < MESH_SPACING (dx %.6f Bohr, dy %.6f Bohr, dz %.6f Bohr) in SCF#%d\n",
                         pSPARC->REFERENCE_CUTOFF, pSPARC->delta_x, pSPARC->delta_y, pSPARC->delta_z, SCF_ind );
         }
     }
     
 	// initialize the history variables of Anderson mixing
 	if (pSPARC->dmcomm_phi != MPI_COMM_NULL) {
-	    memset(pSPARC->mixing_hist_Xk, 0, sizeof(double)* pSPARC->Nd_d * pSPARC->Nspin * pSPARC->MixingHistory);
-	    memset(pSPARC->mixing_hist_Fk, 0, sizeof(double)* pSPARC->Nd_d * pSPARC->Nspin * pSPARC->MixingHistory);
+	    memset(pSPARC->mixing_hist_Xk, 0, sizeof(double)* pSPARC->Nd_d * pSPARC->Nspden * pSPARC->MixingHistory);
+	    memset(pSPARC->mixing_hist_Fk, 0, sizeof(double)* pSPARC->Nd_d * pSPARC->Nspden * pSPARC->MixingHistory);
     }
     
     Calculate_EGS_elecDensEnergy(pSPARC);
@@ -122,7 +123,7 @@ void Calculate_electronicGroundState(SPARC_OBJ *pSPARC) {
         if (pSPARC->d3Flag == 1) {
         	fprintf(output_fp,"DFT-D3 correction                  :%18.10E (Ha)\n", pSPARC->d3Energy[0]);
         }
-        if (pSPARC->vdWDFFlag != 0) {
+        if (pSPARC->ixc[3] != 0) {
             fprintf(output_fp,"vdWDF energy                       :%18.10E (Ha)\n", pSPARC->vdWDFenergy);
         }
         fclose(output_fp);
@@ -145,6 +146,9 @@ void Calculate_electronicGroundState(SPARC_OBJ *pSPARC) {
     Calculate_EGS_Forces(pSPARC);
     t2 = MPI_Wtime();
     
+    // calculate atom magnetization
+    if (pSPARC->spin_typ) CalculateAtomMag(pSPARC);
+
     // write forces into .static file if required
     if (rank == 0 && pSPARC->Verbosity && pSPARC->PrintForceFlag == 1 && pSPARC->MDFlag == 0 && pSPARC->RelaxFlag == 0) {
         static_fp = fopen(pSPARC->StaticFilename,"a");
@@ -156,6 +160,19 @@ void Calculate_electronicGroundState(SPARC_OBJ *pSPARC) {
         for (i = 0; i < pSPARC->n_atom; i++) {
             fprintf(static_fp,"%18.10E %18.10E %18.10E\n",
                     pSPARC->forces[3*i],pSPARC->forces[3*i+1],pSPARC->forces[3*i+2]);
+        }
+        if (pSPARC->spin_typ == 1) {        
+            fprintf(static_fp, "Atomic magnetization along Z-dir within Radius 2 Bohr: (Bohr magneton)\n");
+            for (i = 0; i < pSPARC->n_atom; i++) {
+                fprintf(static_fp,"%18.10E\n", pSPARC->AtomMag[i]);
+            }
+        }
+        if (pSPARC->spin_typ == 2) {        
+            fprintf(static_fp, "Atomic magnetization along X,Y,Z-dir within Radius 2 Bohr: (Bohr magneton)\n");
+            for (i = 0; i < pSPARC->n_atom; i++) {
+                fprintf(static_fp,"%18.10E %18.10E %18.10E\n",
+                        pSPARC->AtomMag[3*i],pSPARC->AtomMag[3*i+1],pSPARC->AtomMag[3*i+2]);
+            }
         }
         fclose(static_fp);
     }
@@ -219,24 +236,33 @@ void Calculate_electronicGroundState(SPARC_OBJ *pSPARC) {
             // write max stress to .out file
             output_fp = fopen(pSPARC->OutFilename,"a");
             double maxS = 0.0, temp;
-            for (i = 0; i< 6; i++){
-            	temp = fabs(pSPARC->stress[i]);
-            	if(temp > maxS)
-            		maxS = temp;	
+            if (pSPARC->CyclixFlag) {
+                maxS = fabs(pSPARC->stress[5]);
+            } else {
+                for (i = 0; i< 6; i++){
+                    temp = fabs(pSPARC->stress[i]);
+                    if(temp > maxS)
+                        maxS = temp;	
+                }
             }
+
             if (pSPARC->BC == 2){
                 fprintf(output_fp,"Pressure                           :%18.10E (GPa)\n",pSPARC->pres*CONST_HA_BOHR3_GPA);
                 fprintf(output_fp,"Maximum stress                     :%18.10E (GPa)\n",maxS*CONST_HA_BOHR3_GPA);
             } else{
-                fprintf(output_fp,"Maximum stress                     :%18.10E (a.u.)\n",maxS);
+                double cellsizes[3] = {pSPARC->range_x, pSPARC->range_y, pSPARC->range_z};
+                int BCs[3] = {pSPARC->BCx, pSPARC->BCy, pSPARC->BCz};
+                char stressUnit[16];
+                double maxSGPa = convertStressToGPa(maxS, cellsizes, BCs, stressUnit);
+                fprintf(output_fp,"Maximum stress                     :%18.10E (%s)\n",maxS,stressUnit);
+                fprintf(output_fp,"Maximum stress equiv. to periodic  :%18.10E (GPa)\n",maxSGPa);
             }
             fprintf(output_fp,"Time for stress calculation        :  %.3f (sec)\n",t2-t1);
             fclose(output_fp);
         }
     } else if(pSPARC->Calc_pres == 1){
         t1 = MPI_Wtime();
-        Calculate_electronic_pressure(pSPARC);
-        // if (pSPARC->d3Flag == 1) d3_grad_cell_stress(pSPARC); // add the D3 contribution on pressure to total pressure. move this function into Calculate_electronic_pressure?
+        Calculate_electronic_pressure(pSPARC);        
         t2 = MPI_Wtime();
         if(!rank && pSPARC->Verbosity) {
         	output_fp = fopen(pSPARC->OutFilename,"a");
@@ -251,6 +277,7 @@ void Calculate_electronicGroundState(SPARC_OBJ *pSPARC) {
     }
 
     if(pSPARC->MDFlag == 1 || pSPARC->RelaxFlag == 1){
+        // force are only correct in intersection of all dmcomm and dmcomm_phi
 		MPI_Bcast(pSPARC->forces, 3*pSPARC->n_atom, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 	    // convert non cartesian atom coordinates to cartesian 
 	    if(pSPARC->cell_typ != 0){
@@ -502,8 +529,12 @@ void scf(SPARC_OBJ *pSPARC)
         
         if(pSPARC->spin_typ == 0)
             fprintf(output_fp,"===================================================================\n");
-        else
+        else if(pSPARC->spin_typ == 1)
             fprintf(output_fp,"========================================================================================\n");
+        else
+            fprintf(output_fp,"======================================================================================================================\n");
+            
+
         if(pSPARC->MDFlag == 1)
             fprintf(output_fp,"                    Self Consistent Field (SCF#%d)                     \n",
                     pSPARC->MDCount + pSPARC->restartCount + (pSPARC->RestartFlag == 0));
@@ -515,12 +546,18 @@ void scf(SPARC_OBJ *pSPARC)
         
         if(pSPARC->spin_typ == 0)
             fprintf(output_fp,"===================================================================\n");
-        else
+        else if(pSPARC->spin_typ == 1)
             fprintf(output_fp,"========================================================================================\n");
+        else
+            fprintf(output_fp,"======================================================================================================================\n");
+
         if(pSPARC->spin_typ == 0)
             fprintf(output_fp,"Iteration     Free Energy (Ha/atom)   SCF Error        Timing (sec)\n");
-        else
+        else if(pSPARC->spin_typ == 1)
             fprintf(output_fp,"Iteration     Free Energy (Ha/atom)    Magnetization     SCF Error        Timing (sec)\n");
+        else
+            fprintf(output_fp,"Iteration     Free Energy (Ha/atom)            Magnetization (tot,x,y,z)                 SCF Error        Timing (sec)\n");
+
         fclose(output_fp);
     }
     
@@ -529,7 +566,6 @@ void scf(SPARC_OBJ *pSPARC)
     #endif
     
     int DMnd = pSPARC->Nd_d;
-    int NspinDMnd = pSPARC->Nspin * DMnd;
     int i;
     // solve the poisson equation for electrostatic potential, "phi"
     Calculate_elecstPotential(pSPARC);
@@ -543,6 +579,7 @@ void scf(SPARC_OBJ *pSPARC)
     #endif
     // calculate xc potential (LDA), "Vxc"
     Calculate_Vxc(pSPARC);
+    pSPARC->countPotentialCalculate++;
 	#ifdef DEBUG
     t2 = MPI_Wtime();
     if (rank == 0) printf("rank = %d, XC calculation took %.3f ms\n", rank, (t2-t1)*1e3); 
@@ -551,29 +588,20 @@ void scf(SPARC_OBJ *pSPARC)
     
     // calculate Veff_loc_dmcomm_phi = phi + Vxc in "phi-domain"
     Calculate_Veff_loc_dmcomm_phi(pSPARC);
-    double veff_mean;
-    veff_mean = 0.0;
-    // for potential mixing with PBC, calculate mean(veff)
-    if (pSPARC->MixingVariable == 1)  { // potential mixing
-        if (pSPARC->BC == 2 || pSPARC->BC == 0) {
-            VectorSum(pSPARC->Veff_loc_dmcomm_phi, NspinDMnd, &veff_mean, pSPARC->dmcomm_phi);
-            veff_mean /= ((double) (pSPARC->Nd * pSPARC->Nspin));
-        }
-    }
-    pSPARC->veff_mean = veff_mean;
-
+    
     // initialize mixing_hist_xk (and mixing_hist_xkm1)
-    Update_mixing_hist_xk(pSPARC, veff_mean);
+    Update_mixing_hist_xk(pSPARC);
     
     if (pSPARC->SQFlag == 1) {
-        TransferVeff_phi2sq(pSPARC, pSPARC->Veff_loc_dmcomm_phi, pSPARC->pSQ->Veff_loc_SQ);
+        for (i = 0; i < pSPARC->Nspden; i++)
+            TransferVeff_phi2sq(pSPARC, pSPARC->Veff_loc_dmcomm_phi + i*DMnd, pSPARC->pSQ->Veff_loc_SQ + i*pSPARC->Nd_d_dmcomm);
     } else {
         // transfer Veff_loc from "phi-domain" to "psi-domain"
-        for (i = 0; i < pSPARC->Nspin; i++)
+        for (i = 0; i < pSPARC->Nspden; i++)
             Transfer_Veff_loc(pSPARC, pSPARC->Veff_loc_dmcomm_phi + i*DMnd, pSPARC->Veff_loc_dmcomm + i*pSPARC->Nd_d_dmcomm);
     }
     
-	#ifdef DEBUG
+    #ifdef DEBUG
     t2 = MPI_Wtime();
     if (rank == 0) {
         printf("rank = %d, Veff calculation and Bcast (non-blocking) took %.3f ms\n",rank,(t2-t1)*1e3); 
@@ -596,19 +624,11 @@ void scf_loop(SPARC_OBJ *pSPARC) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nproc);
     
-    int DMnd = pSPARC->Nd_d;
-    int NspinDMnd = pSPARC->Nspin * DMnd;
-    int sindx_rho = (pSPARC->Nspin == 2) ? DMnd : 0;
+    int DMnd = pSPARC->Nd_d;    
     int i, k, SCFcount;
-
-#ifdef DEBUG
-    int spn_i;
-    int Nk = pSPARC->Nkpts_kptcomm;
-    int Ns = pSPARC->Nstates;
-#endif
-
-    double error, dEtot, dEband, veff_mean;
+    double error, dEtot, dEband;
     double t_scf_s, t_scf_e, t_cum_scf;
+    double Veff_mean[4];
 
 #ifdef DEBUG
     double t1, t2;
@@ -618,8 +638,7 @@ void scf_loop(SPARC_OBJ *pSPARC) {
 
     t_cum_scf = 0.0;
     error = pSPARC->TOL_SCF + 1.0;
-    dEtot = dEband = pSPARC->TOL_SCF + 1.0;
-    veff_mean = pSPARC->veff_mean;
+    dEtot = dEband = pSPARC->TOL_SCF + 1.0;    
     if (pSPARC->usefock > 1) pSPARC->MINIT_SCF = 1;
 
     // 1st SCF will perform Chebyshev filtering several times, "count" keeps track 
@@ -636,19 +655,26 @@ void scf_loop(SPARC_OBJ *pSPARC) {
         }
 #endif
         
-        // used for QE scf error, save input rho_in and phi_in
-        if (pSPARC->scf_err_type == 1) {
-            memcpy(pSPARC->phi_dmcomm_phi_in, pSPARC->elecstPotential, DMnd * sizeof(double));
-            memcpy(pSPARC->rho_dmcomm_phi_in, pSPARC->electronDens   , DMnd * sizeof(double));
-		}
+        // update Veff_loc_dmcomm_phi_in
+        if (pSPARC->MixingVariable == 1) {
+            double *Veff_out = (pSPARC->spin_typ == 2) ? pSPARC->Veff_dia_loc_dmcomm_phi : pSPARC->Veff_loc_dmcomm_phi;
+            memcpy(pSPARC->Veff_loc_dmcomm_phi_in, Veff_out, sizeof(double)*pSPARC->Nd_d*pSPARC->Nspdend);
+        }
+        // update electronDens_in
+        if (pSPARC->spin_typ > 0 && pSPARC->MixingVariable == 0) {
+            memcpy(pSPARC->electronDens_in, pSPARC->electronDens, pSPARC->Nspdentd*DMnd * sizeof(double));
+        }
 
 		// start scf timer
         t_scf_s = MPI_Wtime();
         
         if (pSPARC->SQFlag == 1)
             Calculate_elecDens_SQ(pSPARC, SCFcount);
-        else
+        else {
             Calculate_elecDens(rank, pSPARC, SCFcount, error);
+            if ((pSPARC->ixc[2]) && (pSPARC->countPotentialCalculate))
+                compute_Kinetic_Density_Tau_Transfer_phi(pSPARC);
+        }
 
         // Calculate net magnetization for spin polarized calculations
         if (pSPARC->spin_typ != 0)
@@ -667,18 +693,12 @@ void scf_loop(SPARC_OBJ *pSPARC) {
             //       An alternative way is to add a correction term to express
             //       everything in rho_out (to correct the rho_in terms in band 
             //       struc energy). This is done once SCF is converged. Therefore
-            //       the final reported energy is variational.
-            if(pSPARC->spin_typ != 0) {
-                double *rho_in = (double *)malloc(3 * DMnd * sizeof(double));
-                for (int i = 0; i < DMnd; i++) {
-                    rho_in[i] = pSPARC->mixing_hist_xk[i] + pSPARC->mixing_hist_xk[DMnd+i];
-                    rho_in[DMnd+i] = pSPARC->mixing_hist_xk[i];
-                    rho_in[2*DMnd+i] = pSPARC->mixing_hist_xk[DMnd+i];
-                }
-                Calculate_Free_Energy(pSPARC, rho_in);
-                free(rho_in);
-            } else
+            //       the final reported energy is variational.            
+            if(pSPARC->spin_typ == 0) {
                 Calculate_Free_Energy(pSPARC, pSPARC->mixing_hist_xk);
+            } else {
+                Calculate_Free_Energy(pSPARC, pSPARC->electronDens_in);                
+            }
             
             dEband = fabs(dEband - pSPARC->Eband) / pSPARC->n_atom;
             dEtot  = fabs(dEtot  - pSPARC->Etot ) / pSPARC->n_atom;
@@ -709,7 +729,7 @@ void scf_loop(SPARC_OBJ *pSPARC) {
             
             // calculate xc potential (LDA, PW92), "Vxc"
             Calculate_Vxc(pSPARC);
-		    
+		    pSPARC->countPotentialCalculate++;
 		    #ifdef DEBUG
             t2 = MPI_Wtime();
             if(!rank) printf("rank = %d, Calculating Vxc took %.3f ms\n", rank, (t2 - t1) * 1e3);
@@ -731,22 +751,14 @@ void scf_loop(SPARC_OBJ *pSPARC) {
             
             // Self Consistency Correction to energy when we evaluate energy based on rho_out
             double Escc = 0.0;
-            // for potential mixing, the history vector is shifted, so we need to add veff_mean back
-            if (pSPARC->BC == 2 || pSPARC->BC == 0) {
-                VectorShift(pSPARC->Veff_loc_dmcomm_phi_in, NspinDMnd, veff_mean, pSPARC->dmcomm_phi);
-            }
-
+            double *Veff_out = (pSPARC->spin_typ == 2) ? pSPARC->Veff_dia_loc_dmcomm_phi : pSPARC->Veff_loc_dmcomm_phi;
+            int ncol = (pSPARC->spin_typ == 0) ? 1 : 2;
             Escc = Calculate_Escc(
-                pSPARC, NspinDMnd, pSPARC->Veff_loc_dmcomm_phi, 
-                pSPARC->Veff_loc_dmcomm_phi_in, pSPARC->electronDens + sindx_rho,
+                pSPARC, DMnd, ncol, Veff_out, 
+                pSPARC->Veff_loc_dmcomm_phi_in, pSPARC->electronDens + ((pSPARC->spin_typ > 0) ? DMnd : 0),
                 pSPARC->dmcomm_phi
             );
             pSPARC->Escc = Escc;
-
-            // remove veff_mean again
-            if (pSPARC->BC == 2 || pSPARC->BC == 0) {
-                VectorShift(pSPARC->Veff_loc_dmcomm_phi_in, NspinDMnd, -veff_mean, pSPARC->dmcomm_phi);
-            }
 
             #ifdef DEBUG
             if(!rank) printf("Escc = %.3e\n", Escc);
@@ -766,40 +778,28 @@ void scf_loop(SPARC_OBJ *pSPARC) {
                    rank,(t2-t1)*1e3,pSPARC->Etot,dEtot,dEband);
 		    #endif
         }
-            
-        // find mean value of Veff, and shift Veff by -mean(Veff)
-        if (pSPARC->MixingVariable == 1 && pSPARC->BC == 2) { // potential mixing 
-            // find mean of Veff
-            VectorSum(pSPARC->Veff_loc_dmcomm_phi, NspinDMnd, &veff_mean, pSPARC->dmcomm_phi);
-            veff_mean /= ((double) (pSPARC->Nd * pSPARC->Nspin));
-            // shift Veff by -mean(Veff) before mixing and calculating scf error
-            VectorShift(pSPARC->Veff_loc_dmcomm_phi, NspinDMnd, -veff_mean, pSPARC->dmcomm_phi);
-            pSPARC->veff_mean = veff_mean;
-        }
 
         // scf convergence flag
         int scf_conv = 0;
 
         // find SCF error
-        if (pSPARC->scf_err_type == 0) { // default
-            Evaluate_scf_error(pSPARC, &error, &scf_conv);
-        } else if (pSPARC->scf_err_type == 1) { // QE scf err: conv_thr
-            Evaluate_QE_scf_error(pSPARC, &error, &scf_conv);
-        }
-        
+        Evaluate_scf_error(pSPARC, &error, &scf_conv);
+
         // check if Etot is NaN
         if (pSPARC->Etot != pSPARC->Etot) {
             if (!rank) printf("ERROR: Etot is NaN\n");
             exit(EXIT_FAILURE);
         }
 
-        // stop the loop if SCF error is smaller than tolerance
-        // if (dEtot < pSPARC->TOL_SCF && dEband < pSPARC->TOL_SCF) break;
-
         // Apply mixing and preconditioner, if required
         #ifdef DEBUG
         t1 = MPI_Wtime();
         #endif
+
+        // find mean value of Veff, and shift Veff by -mean(Veff)
+        if (pSPARC->MixingVariable == 1) { // potential mixing 
+            shiting_Veff_mean(pSPARC, pSPARC->Veff_loc_dmcomm_phi, pSPARC->Nspden, Veff_mean, 0, -1);
+        }
 
         Mixing(pSPARC, SCFcount);
 
@@ -808,44 +808,39 @@ void scf_loop(SPARC_OBJ *pSPARC) {
         if(!rank) printf("rank = %d, Mixing (+ precond) took %.3f ms\n", rank, (t2 - t1) * 1e3);
         #endif
 
-        if (pSPARC->MixingVariable == 1 && pSPARC->BC == 2) { // potential mixing, add veff_mean back
+        if (pSPARC->MixingVariable == 1) { // potential mixing, add veff_mean back
             // shift the next input veff so that it's integral is
             // equal to that of the current output veff for periodic systems
             // shift Veff by +mean(Veff)
-            VectorShift(pSPARC->Veff_loc_dmcomm_phi, NspinDMnd, veff_mean, pSPARC->dmcomm_phi);
+            shiting_Veff_mean(pSPARC, pSPARC->Veff_loc_dmcomm_phi, pSPARC->Nspden, Veff_mean, 1, 1);
         } else if (pSPARC->MixingVariable == 0) { // recalculate potential for density mixing 
             // solve the poisson equation for electrostatic potential, "phi"
             Calculate_elecstPotential(pSPARC);
             Calculate_Vxc(pSPARC);
+            pSPARC->countPotentialCalculate++;
             Calculate_Veff_loc_dmcomm_phi(pSPARC);
         }
 
+        #ifdef DEBUG
+        t1 = MPI_Wtime();
+        #endif
+
         if (pSPARC->SQFlag == 1) {
-            for (i = 0; i < pSPARC->Nspin; i++)
+            for (i = 0; i < pSPARC->Nspden; i++)
                 TransferVeff_phi2sq(pSPARC, pSPARC->Veff_loc_dmcomm_phi, pSPARC->pSQ->Veff_loc_SQ);
         } else {
             // transfer Veff_loc from "phi-domain" to "psi-domain"
-            #ifdef DEBUG
-            t1 = MPI_Wtime();
-            #endif
-
-            for (i = 0; i < pSPARC->Nspin; i++)
+            for (i = 0; i < pSPARC->Nspden; i++)
                 Transfer_Veff_loc(pSPARC, pSPARC->Veff_loc_dmcomm_phi + i*DMnd, pSPARC->Veff_loc_dmcomm + i*pSPARC->Nd_d_dmcomm);
-            
-            #ifdef DEBUG
-            t2 = MPI_Wtime();
-            if(!rank) 
-                printf("rank = %d, Transfering Veff from phi-domain to psi-domain took %.3f ms\n", 
-                    rank, (t2 - t1) * 1e3);
-            #endif  
         }
 
-		#ifdef DEBUG
+        #ifdef DEBUG
+        t2 = MPI_Wtime();
         if(!rank) 
-        	printf("rank = %d, Transfering Veff from phi-domain to psi-domain took %.3f ms\n", 
-                   rank, (t2 - t1) * 1e3);
-		#endif  
-
+            printf("rank = %d, Transfering Veff from phi-domain to psi-domain took %.3f ms\n", 
+                rank, (t2 - t1) * 1e3);
+        #endif 
+        
         SCFcount++;
         t_scf_e = MPI_Wtime();
         #ifdef DEBUG        
@@ -862,9 +857,14 @@ void scf_loop(SPARC_OBJ *pSPARC) {
             if(pSPARC->spin_typ == 0)
                 fprintf(output_fp,"%-6d      %18.10E        %.3E        %.3f\n", 
                         SCFcount, pSPARC->Etot/pSPARC->n_atom, error, t_cum_scf);
-            else
+            else if(pSPARC->spin_typ == 1)
                 fprintf(output_fp,"%-6d      %18.10E        %11.4E        %.3E        %.3f\n", 
-                            SCFcount, pSPARC->Etot/pSPARC->n_atom, pSPARC->netM, error, t_cum_scf);
+                            SCFcount, pSPARC->Etot/pSPARC->n_atom, pSPARC->netM[0], error, t_cum_scf);
+            else if(pSPARC->spin_typ == 2)
+                fprintf(output_fp,"%-6d      %18.10E    %11.4E, %11.4E, %11.4E, %11.4E     %.3E        %.3f\n", 
+                            SCFcount, pSPARC->Etot/pSPARC->n_atom, 
+                            pSPARC->netM[0], pSPARC->netM[1], pSPARC->netM[2], pSPARC->netM[3], error, t_cum_scf);
+
             fclose(output_fp);
             t_cum_scf = 0.0;
         }
@@ -880,10 +880,6 @@ void scf_loop(SPARC_OBJ *pSPARC) {
             exit(EXIT_FAILURE);
         }
         fprintf(output_fp,"Total number of SCF: %-6d\n",SCFcount);
-        // for density mixing, extra poisson solve is needed
-        if (pSPARC->scf_err_type == 1 && pSPARC->MixingVariable == 0) { 
-            fprintf(output_fp,"Extra time for evaluating QE SCF Error: %.3f (sec)\n", pSPARC->t_qe_extra);
-        }
         fclose(output_fp);
     }
 
@@ -898,7 +894,7 @@ void scf_loop(SPARC_OBJ *pSPARC) {
             // Find occupation corresponding to maximum eigenvalue
             double maxeig, occ_maxeig;
             maxeig = pSQ->maxeig[0];
-            for (k = 1; k < pSQ->Nd_d_SQ; k++) {
+            for (k = 1; k < pSQ->DMnd_SQ; k++) {
                 if (pSQ->maxeig[k] > maxeig)
                     maxeig = pSQ->maxeig[k];
             }
@@ -915,6 +911,9 @@ void scf_loop(SPARC_OBJ *pSPARC) {
         }
     } else {
         #ifdef DEBUG
+        int spn_i;
+        int Nk = pSPARC->Nkpts_kptcomm;
+        int Ns = pSPARC->Nstates;
         int spin_maxocc = 0, k_maxocc = 0;
         double maxocc = -1.0;
         for (spn_i = 0; spn_i < pSPARC->Nspin_spincomm; spn_i++){
@@ -929,7 +928,6 @@ void scf_loop(SPARC_OBJ *pSPARC) {
                     k_maxocc = k;
                 }
 
-                // #ifdef DEBUG
                 if(!rank) {
                     int nocc_print = min(200,pSPARC->Nstates - pSPARC->Nelectron/2 + 10);
                     nocc_print = min(nocc_print, pSPARC->Nstates);
@@ -939,7 +937,7 @@ void scf_loop(SPARC_OBJ *pSPARC) {
                                 Ns - nocc_print + i + 1, 
                                 pSPARC->lambda_sorted[spn_i*Ns*Nk + k*Ns + Ns - nocc_print + i],
                                 Ns - nocc_print + i + 1, 
-                                (3.0-pSPARC->Nspin)/pSPARC->Nspinor * pSPARC->occ_sorted[spn_i*Ns*Nk + k*Ns + Ns - nocc_print + i]);
+                                pSPARC->occfac * pSPARC->occ_sorted[spn_i*Ns*Nk + k*Ns + Ns - nocc_print + i]);
                     }
                 }
             }
@@ -965,8 +963,8 @@ void scf_loop(SPARC_OBJ *pSPARC) {
             if (pSPARC->BC != 1) printf("\nk = [%.3f, %.3f, %.3f]\n", k1_red, k2_red, k3_red);
             printf("Occupation of state %d (90%%) = %.15f.\n"
                 "Occupation of state %d (100%%) = %.15f.\n",
-                ind_90percent+1, (3.0-pSPARC->Nspin)/pSPARC->Nspinor * g_ind_90percent,
-                ind_100percent+1, (3.0-pSPARC->Nspin)/pSPARC->Nspinor * g_ind_100percent);
+                ind_90percent+1, pSPARC->occfac * g_ind_90percent,
+                ind_100percent+1, pSPARC->occfac * g_ind_100percent);
         }
         #endif
     }
@@ -1002,43 +1000,31 @@ void scf_loop(SPARC_OBJ *pSPARC) {
  *         so that their mean value is 0.
  */
 void Evaluate_scf_error(SPARC_OBJ *pSPARC, double *scf_error, int *scf_conv) {
-    double error, sbuf[2], rbuf[2], temp;
-    int i, rank;
+    int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
     int DMnd = pSPARC->Nd_d;
-    int NspinDMnd = pSPARC->Nspin * DMnd;
-    int sindx_rho = (pSPARC->Nspin == 2) ? DMnd : 0;
-    
-    error = 0.0;
-    sbuf[0] = sbuf[1] = 0.0;    
-    rbuf[0] = rbuf[1] = 0.0;
+    int len = pSPARC->Nspdend * DMnd;
 
-    if (pSPARC->MixingVariable == 0) {        // density mixing
-        for (i = 0; i < NspinDMnd; i++) {
-            temp     = pSPARC->electronDens[sindx_rho + i] - pSPARC->mixing_hist_xk[i];
-            sbuf[0] += pSPARC->electronDens[sindx_rho + i] * pSPARC->electronDens[sindx_rho + i];
-            sbuf[1] += temp * temp;
-        }
-    } else if (pSPARC->MixingVariable == 1) { // potential mixing 
-        for (i = 0; i < NspinDMnd; i++) {
-            //temp = (pSPARC->Veff_loc_dmcomm_phi[i] - veff_mean) - pSPARC->mixing_hist_xk[i];
-            temp     = pSPARC->Veff_loc_dmcomm_phi[i] - pSPARC->mixing_hist_xk[i];
-            // TODO: should we calculate the norm of the shifted v_out?
-            sbuf[0] += pSPARC->Veff_loc_dmcomm_phi[i] * pSPARC->Veff_loc_dmcomm_phi[i];
-            sbuf[1] += temp * temp;
-        }
-    } else {
-        if (!rank) {
-            printf("Cannot recogonize mixing variable option %d\n", pSPARC->MixingVariable);
-            exit(EXIT_FAILURE);
-        }
+    double *var_in = NULL, *var_out = NULL;    
+    if (pSPARC->MixingVariable == 0) {
+        var_in = (pSPARC->spin_typ) ? (pSPARC->electronDens_in + DMnd) : pSPARC->mixing_hist_xk;
+        var_out = pSPARC->electronDens + ((pSPARC->spin_typ > 0) ? DMnd : 0);
+    } else if (pSPARC->MixingVariable == 1) {
+        var_in = pSPARC->Veff_loc_dmcomm_phi_in;
+        var_out = (pSPARC->spin_typ == 2) ? pSPARC->Veff_dia_loc_dmcomm_phi : pSPARC->Veff_loc_dmcomm_phi;
+    }
+    
+    double sbuf[2] = {0, 0};
+    for (int i = 0; i < len; i++) {
+        double temp = var_out[i] - var_in[i];
+        sbuf[0] += var_out[i] * var_out[i];
+        sbuf[1] += temp * temp;
     }
 
+    double error;
     if (pSPARC->dmcomm_phi != MPI_COMM_NULL) {
-        // MPI_Allreduce(sbuf, rbuf, 2, MPI_DOUBLE, MPI_SUM, pSPARC->dmcomm_phi);
-        MPI_Reduce(sbuf, rbuf, 2, MPI_DOUBLE, MPI_SUM, 0, pSPARC->dmcomm_phi);
-        error = sqrt(rbuf[1] / rbuf[0]);
+        MPI_Allreduce(MPI_IN_PLACE, sbuf, 2, MPI_DOUBLE, MPI_SUM, pSPARC->dmcomm_phi);
+        error = sqrt(sbuf[1] / sbuf[0]);
     }
     MPI_Bcast(&error, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
@@ -1049,80 +1035,24 @@ void Evaluate_scf_error(SPARC_OBJ *pSPARC, double *scf_error, int *scf_conv) {
 }
 
 
-
-/**
- * @brief Evaluate the scf error defined in Quantum Espresso.
- *
- *        Find the scf error defined in Quantum Espresso. QE implements 
- *        Eq.(A.7) of the reference paper, with a slight modification: 
- *          conv_thr = 4 \pi e^2 \Omega \sum_G |\Delta \rho(G)|^2 / G^2
- *        This is equivalent to 2 * Eq.(A.6) in the reference paper.
- *
- * @ref   P Giannozzi et al, J. Phys.:Condens. Matter 21(2009) 395502.
- */
-void Evaluate_QE_scf_error(SPARC_OBJ *pSPARC, double *scf_error, int *scf_conv) 
-{
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-    // update phi_out for density mixing
-    if (pSPARC->MixingVariable == 0) { // desity mixing
-        double t1, t2;
-        t1 = MPI_Wtime();
-        // solve the poisson equation for electrostatic potential, "phi"
-        Calculate_elecstPotential(pSPARC);
-        t2 = MPI_Wtime();
-        if (!rank) printf("QE scf error: update phi_out took %.3f ms\n", (t2-t1)*1e3); 
-        pSPARC->t_qe_extra += (t2 - t1);
-    }
-
-    double error = 0.0;
-    if (pSPARC->dmcomm_phi != MPI_COMM_NULL) {
-        int i;
-        int DMnd = pSPARC->Nd_d;
-        double loc_err = 0.0;
-        for (i = 0; i < DMnd; i++) {
-            loc_err += (pSPARC->electronDens[i]    - pSPARC->rho_dmcomm_phi_in[i]) * 
-                       (pSPARC->elecstPotential[i] - pSPARC->phi_dmcomm_phi_in[i]);
-        }
-        loc_err = fabs(loc_err * pSPARC->dV); // in case error is not numerically positive
-        MPI_Reduce(&loc_err, &error, 1, MPI_DOUBLE, MPI_SUM, 0, pSPARC->dmcomm_phi);
-    }
-
-    MPI_Bcast(&error, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);   
-    // output
-    *scf_error = error;
-    *scf_conv  = (pSPARC->usefock % 2 == 1) 
-                ? ((int) (error < pSPARC->TOL_SCF_INIT)) : ((int) (error < pSPARC->TOL_SCF));
-}
-
-
-
 /**
 * @ brief find net magnetization of the system
 **/
 void Calculate_magnetization(SPARC_OBJ *pSPARC)
 {
     if(pSPARC->dmcomm_phi == MPI_COMM_NULL) return;
-
-    double int_rhoup = 0.0, int_rhodn = 0.0;
-    double spn_int[2], spn_sum[2] = {0.0,0.0};
-    int DMnd = pSPARC->Nd_d, i;
-    
-    for (i = 0; i < DMnd; i++) {
-        int_rhoup += pSPARC->electronDens[DMnd+i];
-        int_rhodn += pSPARC->electronDens[2*DMnd+i];
+    int DMnd = pSPARC->Nd_d;
+    for (int n = 0; n < pSPARC->Nmag; n++) {
+        pSPARC->netM[n] = 0;
+        for (int i = 0; i < DMnd; i++) {
+            if (pSPARC->CyclixFlag)
+                pSPARC->netM[n] += pSPARC->mag[i+n*DMnd] * pSPARC->Intgwt_phi[i];
+            else
+                pSPARC->netM[n] += pSPARC->mag[i+n*DMnd] * pSPARC->dV;
+        }
     }
-
-    int_rhoup *= pSPARC->dV;
-    int_rhodn *= pSPARC->dV;
     
-    spn_int[0] = int_rhoup; spn_int[1] = int_rhodn;
-    MPI_Allreduce(spn_int, spn_sum, 2, MPI_DOUBLE,
-                  MPI_SUM, pSPARC->dmcomm_phi);
-    pSPARC->Nelectron_up = spn_sum[0];
-    pSPARC->Nelectron_dn = spn_sum[1];         
-    pSPARC->netM = spn_sum[0] - spn_sum[1];
+    MPI_Allreduce(MPI_IN_PLACE, pSPARC->netM, pSPARC->Nmag, MPI_DOUBLE, MPI_SUM, pSPARC->dmcomm_phi);
 }    
 
 /**
@@ -1131,11 +1061,29 @@ void Calculate_magnetization(SPARC_OBJ *pSPARC)
 void Calculate_Veff_loc_dmcomm_phi(SPARC_OBJ *pSPARC) 
 {
     if (pSPARC->dmcomm_phi == MPI_COMM_NULL) return;
-    unsigned i, spn_i, sindx;
-    for (spn_i = 0; spn_i < pSPARC->Nspin; spn_i++) {
-        sindx = spn_i * pSPARC->Nd_d;
-        for (i = 0; i < pSPARC->Nd_d; i++) {
-            pSPARC->Veff_loc_dmcomm_phi[sindx + i] = pSPARC->XCPotential[sindx + i] + pSPARC->elecstPotential[i];
+    int DMnd = pSPARC->Nd_d;
+
+    if (pSPARC->spin_typ == 2) {
+        for (int i = 0; i < DMnd; i++) {
+            // complete 4 terms
+            pSPARC->Veff_loc_dmcomm_phi[i] = pSPARC->XCPotential_nc[i] + pSPARC->elecstPotential[i];
+            pSPARC->Veff_loc_dmcomm_phi[i+DMnd] = pSPARC->XCPotential_nc[i+DMnd] + pSPARC->elecstPotential[i];
+            pSPARC->Veff_loc_dmcomm_phi[i+2*DMnd] = pSPARC->XCPotential_nc[i+2*DMnd];
+            pSPARC->Veff_loc_dmcomm_phi[i+3*DMnd] = pSPARC->XCPotential_nc[i+3*DMnd];
+
+            // diagonal 2 terms
+            if (pSPARC->MixingVariable == 1) {
+                pSPARC->Veff_dia_loc_dmcomm_phi[i] = pSPARC->XCPotential[i] + pSPARC->elecstPotential[i];
+                pSPARC->Veff_dia_loc_dmcomm_phi[i+DMnd] = pSPARC->XCPotential[i+DMnd] + pSPARC->elecstPotential[i];
+            }
+        }        
+    } else {
+        assert(pSPARC->Nspdend == 1 || pSPARC->Nspdend == 2);
+        for (int n = 0; n < pSPARC->Nspdend; n++) {
+            int shift = n * DMnd;
+            for (int i = 0; i < DMnd; i++) {
+                pSPARC->Veff_loc_dmcomm_phi[shift + i] = pSPARC->XCPotential[shift + i] + pSPARC->elecstPotential[i];
+            }
         }
     }
 }
@@ -1146,36 +1094,54 @@ void Calculate_Veff_loc_dmcomm_phi(SPARC_OBJ *pSPARC)
  * @brief   Update mixing_hist_xk.
  */
 // TODO: check if this function is necessary!
-void Update_mixing_hist_xk(SPARC_OBJ *pSPARC, double veff_mean) 
+void Update_mixing_hist_xk(SPARC_OBJ *pSPARC) 
+{
+    if (pSPARC->dmcomm_phi == MPI_COMM_NULL) return;    
+    double Veff_mean[4];
+    if (pSPARC->MixingVariable == 0) {
+        memcpy(pSPARC->mixing_hist_xkm1, pSPARC->electronDens, sizeof(double)*pSPARC->Nd_d);
+        if (pSPARC->spin_typ > 0) {
+            int ncol = (pSPARC->spin_typ == 2 ? 3 : 1);
+            memcpy(pSPARC->mixing_hist_xkm1+pSPARC->Nd_d, pSPARC->mag + (pSPARC->spin_typ == 2) * pSPARC->Nd_d, sizeof(double)*pSPARC->Nd_d*ncol);
+        }         
+    } else {
+        memcpy(pSPARC->mixing_hist_xkm1, pSPARC->Veff_loc_dmcomm_phi, sizeof(double)*pSPARC->Nd_d*pSPARC->Nspden);
+        shiting_Veff_mean(pSPARC, pSPARC->mixing_hist_xkm1, pSPARC->Nspden, Veff_mean, 0, -1);
+        memcpy(pSPARC->mixing_hist_xk, pSPARC->mixing_hist_xkm1, sizeof(double)*pSPARC->Nd_d*pSPARC->Nspden);
+    }
+    memcpy(pSPARC->mixing_hist_xk, pSPARC->mixing_hist_xkm1, sizeof(double)*pSPARC->Nd_d*pSPARC->Nspden);
+}
+
+
+void shiting_Veff_mean(SPARC_OBJ *pSPARC, double *Veff, int ncol, double *Veff_mean, int option, int dir)
 {
     if (pSPARC->dmcomm_phi == MPI_COMM_NULL) return;
-    unsigned i;
-    if (pSPARC->spin_typ == 0) {
-        if (pSPARC->MixingVariable == 0) {        // density mixing
-            for (i = 0; i < pSPARC->Nd_d; i++) {
-                pSPARC->mixing_hist_xk[i] = pSPARC->mixing_hist_xkm1[i]
-                                          = pSPARC->electronDens[i];
-            }
-        } else if (pSPARC->MixingVariable == 1) { // potential mixing
-            for (i = 0; i < pSPARC->Nd_d; i++) {
-                pSPARC->mixing_hist_xk[i] = pSPARC->mixing_hist_xkm1[i]
-                                          = pSPARC->Veff_loc_dmcomm_phi[i] - veff_mean;
-            }
+    // when option = 0, calculate Veff_mean, option = 1, don't do it
+    // shift by dir * Veff_mean
+    assert(option == 0 || option == 1);
+    assert(dir == 1 || dir == -1);
+    // user need ensure Veff_mean at least with size ncol*1
+    if (pSPARC->BC != 2) {
+        memset(Veff_mean, 0, sizeof(double)*ncol);
+        return;
+    }
+
+    int DMnd = pSPARC->Nd_d;
+    if (option == 0) {
+        for (int i = 0; i < ncol; i++) {
+            VectorSum(Veff + i*DMnd, DMnd, Veff_mean+i, pSPARC->dmcomm_phi);
+            Veff_mean[i] /= pSPARC->Nd;
         }
-    } else {
-        if (pSPARC->MixingVariable == 0) {        // density mixing
-            for (i = 0; i < 2 * pSPARC->Nd_d; i++) {
-                pSPARC->mixing_hist_xk[i] = pSPARC->mixing_hist_xkm1[i]
-                                          = pSPARC->electronDens[pSPARC->Nd_d + i];
-            }
-        } else if (pSPARC->MixingVariable == 1) { // potential mixing
-            for (i = 0; i < 2 * pSPARC->Nd_d; i++) {
-                pSPARC->mixing_hist_xk[i] = pSPARC->mixing_hist_xkm1[i]
-                                          = pSPARC->Veff_loc_dmcomm_phi[i] - veff_mean;
-            }
+        if (pSPARC->spin_typ == 1) {
+            Veff_mean[0] = Veff_mean[1] = (Veff_mean[0] + Veff_mean[1])/2.0;
         }
     }
+    
+    for (int i = 0; i < ncol; i++) {
+        VectorShift(Veff + i*DMnd, DMnd, dir * Veff_mean[i], pSPARC->dmcomm_phi);
+    }
 }
+
 
 
 
@@ -1210,7 +1176,7 @@ void Transfer_Veff_loc(SPARC_OBJ *pSPARC, double *Veff_phi_domain, double *Veff_
     D2D(&pSPARC->d2d_dmcomm_phi, &pSPARC->d2d_dmcomm, gridsizes, pSPARC->DMVertices, Veff_phi_domain, 
         pSPARC->DMVertices_dmcomm, Veff_psi_domain, pSPARC->dmcomm_phi, sdims, 
         (pSPARC->spincomm_index == 0 && pSPARC->kptcomm_index == 0 && pSPARC->bandcomm_index == 0) ? pSPARC->dmcomm : MPI_COMM_NULL, 
-        rdims, MPI_COMM_WORLD);
+        rdims, MPI_COMM_WORLD, sizeof(double));
 #ifdef DEBUG
     t2 = MPI_Wtime();
     if (rank == 0) printf("---Transfer Veff_loc: D2D took %.3f ms\n",(t2-t1)*1e3);
@@ -1256,7 +1222,9 @@ void Transfer_Veff_loc(SPARC_OBJ *pSPARC, double *Veff_phi_domain, double *Veff_
     t2 = MPI_Wtime();
     if (rank == 0) printf("---Transfer Veff_loc: mpi_bcast (count = %d) to all bandcomms took %.3f ms\n",pSPARC->Nd_d_dmcomm,(t2-t1)*1e3);
 #endif
-    
+
+    if ((pSPARC->ixc[2]) && (pSPARC->countPotentialCalculate > 1))
+        Transfer_vxcMGGA3_phi_psi(pSPARC, pSPARC->vxcMGGA3, pSPARC->vxcMGGA3_loc_dmcomm); // only transfer the potential they are going to use
 }
 
 
@@ -1281,7 +1249,7 @@ void TransferDensity(SPARC_OBJ *pSPARC, double *rho_send, double *rho_recv)
 #endif
     D2D(&pSPARC->d2d_dmcomm, &pSPARC->d2d_dmcomm_phi, gridsizes, pSPARC->DMVertices_dmcomm, rho_send, 
         pSPARC->DMVertices, rho_recv, (pSPARC->spincomm_index == 0 && pSPARC->kptcomm_index == 0 && pSPARC->bandcomm_index == 0) ? pSPARC->dmcomm : MPI_COMM_NULL, sdims, 
-        pSPARC->dmcomm_phi, rdims, MPI_COMM_WORLD);
+        pSPARC->dmcomm_phi, rdims, MPI_COMM_WORLD, sizeof(double));
 #ifdef DEBUG
     t2 = MPI_Wtime();
     if (rank == 0) printf("rank = %d, D2D took %.3f ms\n", rank, (t2-t1)*1e3);
@@ -1389,4 +1357,110 @@ double calculate_PolarizationZ(SPARC_OBJ *pSPARC)
 	// Pz /= AreaXY;
     free(rho_avZ);
     return Pz;
+ * @brief   Calculate magnetization of atoms
+ */
+void CalculateAtomMag(SPARC_OBJ *pSPARC)
+{
+    if(pSPARC->dmcomm_phi == MPI_COMM_NULL) return;
+    int ncol = (pSPARC->spin_typ == 2) ? 3 : 1;
+    // reset AtomMag
+    memset(pSPARC->AtomMag, 0, sizeof(double) * pSPARC->n_atom * ncol);
+    double rc = 2.0;
+    int DMnd = pSPARC->Nd_d;
+    int DMnx = pSPARC->Nx_d;
+    int DMny = pSPARC->Ny_d;
+
+    double Lx = pSPARC->range_x;
+    double Ly = pSPARC->range_y;
+    double Lz = pSPARC->range_z;
+
+    double DMxs = pSPARC->xin + pSPARC->DMVertices[0] * pSPARC->delta_x;
+    double DMxe = pSPARC->xin + pSPARC->DMVertices[1] * pSPARC->delta_x; // note that this is not the actual edge, add BCx to get actual domain edge
+    double DMys = pSPARC->DMVertices[2] * pSPARC->delta_y;
+    double DMye = pSPARC->DMVertices[3] * pSPARC->delta_y; // note that this is not the actual edge, add BCx to get actual domain edge
+    double DMzs = pSPARC->DMVertices[4] * pSPARC->delta_z;
+    double DMze = pSPARC->DMVertices[5] * pSPARC->delta_z; // note that this is not the actual edge, add BCx to get actual domain edge
+    double dis = 0;
+
+    for (int iatm = 0; iatm < pSPARC->n_atom; iatm++) {
+        double x0 = pSPARC->atom_pos[3*iatm];
+        double y0 = pSPARC->atom_pos[3*iatm+1];
+        double z0 = pSPARC->atom_pos[3*iatm+2];
+
+        int ppmin, ppmax, qqmin, qqmax, rrmin, rrmax;
+        ppmin = ppmax = qqmin = qqmax = rrmin = rrmax = 0;
+
+        if (pSPARC->BCx == 0) {
+            ppmax = floor((rc + Lx - x0) / Lx + TEMP_TOL);
+            ppmin = -floor((rc + x0) / Lx + TEMP_TOL);
+        }
+        if (pSPARC->BCy == 0) {
+            qqmax = floor((rc + Ly - y0) / Ly + TEMP_TOL);
+            qqmin = -floor((rc + y0) / Ly + TEMP_TOL);
+        }
+        if (pSPARC->BCz == 0) {
+            rrmax = floor((rc + Lz - z0) / Lz + TEMP_TOL);
+            rrmin = -floor((rc + z0) / Lz + TEMP_TOL);
+        }
+
+        // check how many of it's images interacts with the local distributed domain
+        for (int rr = rrmin; rr <= rrmax; rr++) {
+            double z0_i = z0 + Lz * rr; // z coord of image atom
+            if ((z0_i < DMzs - rc) || (z0_i >= DMze + rc)) continue;
+            for (int qq = qqmin; qq <= qqmax; qq++) {
+                double y0_i = y0 + Ly * qq; // y coord of image atom
+                if ((y0_i < DMys - rc) || (y0_i >= DMye + rc)) continue;
+                for (int pp = ppmin; pp <= ppmax; pp++) {
+                    double x0_i = x0 + Lx * pp; // x coord of image atom
+                    if ((x0_i < DMxs - rc) || (x0_i >= DMxe + rc)) continue;
+                    
+                    // find start & end nodes of the rc-region of the image atom
+                    // This way, we try to make sure all points inside rc-region
+                    // is strictly less that rc distance away from the image atom
+                    double rc_xl = ceil( (x0_i - pSPARC->xin - rc)/pSPARC->delta_x);
+                    double rc_xr = floor((x0_i - pSPARC->xin + rc)/pSPARC->delta_x);
+                    double rc_yl = ceil( (y0_i - rc)/pSPARC->delta_y);
+                    double rc_yr = floor((y0_i + rc)/pSPARC->delta_y);
+                    double rc_zl = ceil( (z0_i - rc)/pSPARC->delta_z);
+                    double rc_zr = floor((z0_i + rc)/pSPARC->delta_z);
+
+                    // find overlap of rc-region of the image and the local dist. domain
+                    double xs = max(pSPARC->DMVertices[0], rc_xl);
+                    double xe = min(pSPARC->DMVertices[1], rc_xr);
+                    double ys = max(pSPARC->DMVertices[2], rc_yl);
+                    double ye = min(pSPARC->DMVertices[3], rc_yr);
+                    double zs = max(pSPARC->DMVertices[4], rc_zl);
+                    double ze = min(pSPARC->DMVertices[5], rc_zr);
+
+                    for (int k = zs; k <= ze; k++) {
+                        double z = k * pSPARC->delta_z;
+                        for (int j = ys; j < ye; j++) {
+                            double y = j * pSPARC->delta_y;
+                            for (int i = xs; i < xe; i++) {
+                                double x = pSPARC->xin + i * pSPARC->delta_x;
+                                CalculateDistance(pSPARC, x, y, z, x0_i, y0_i, z0_i, &dis);
+                                // check if the rc sphere of this image intersects with current domain
+                                if (dis <= rc) {
+                                    int k_DM = k - pSPARC->DMVertices[4];
+                                    int j_DM = j - pSPARC->DMVertices[2];
+                                    int i_DM = i - pSPARC->DMVertices[0];
+                                    int indx = k_DM * (DMnx * DMny) + j_DM * DMnx + i_DM;
+                                    if (pSPARC->spin_typ == 2) {
+                                        pSPARC->AtomMag[3*iatm  ] += pSPARC->mag[indx + DMnd]   * pSPARC->dV;   // magx
+                                        pSPARC->AtomMag[3*iatm+1] += pSPARC->mag[indx + 2*DMnd] * pSPARC->dV; // magy
+                                        pSPARC->AtomMag[3*iatm+2] += pSPARC->mag[indx + 3*DMnd] * pSPARC->dV; // magz
+                                    } 
+                                    if (pSPARC->spin_typ == 1) {
+                                        pSPARC->AtomMag[iatm] += pSPARC->mag[indx] * pSPARC->dV;   // magz
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    MPI_Allreduce(MPI_IN_PLACE, pSPARC->AtomMag, pSPARC->n_atom*ncol, MPI_DOUBLE, MPI_SUM, pSPARC->dmcomm_phi);
 }

@@ -1,0 +1,58 @@
+name: Build SPARC using conda-build toolchains and perform quick test (no upload)
+
+on: 
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0}
+    strategy:
+      max-parallel: 5
+
+    steps:
+    - uses: actions/checkout@v3
+    - uses: conda-incubator/setup-miniconda@v3
+      with:
+        python-version: "3.10"
+        activate-environment: sparc-test
+        conda-build-version: "24.3.0"
+        #mamba-version: "*"
+        miniforge-variant: "Mambaforge" # Fix according to https://github.com/nextstrain/cli/commit/4a764976519ca5c540c745463548a9d883eae079
+        channels: conda-forge,defaults
+        channel-priority: true
+    - name: Install boa dependencies
+      run: |
+        mamba install -c conda-forge pip "conda-build=24.3.0" "colorama=0.4"  "ruamel=1.0" "ruamel.yaml=0.17" "rich=13.6" "mamba=1.5" "jsonschema=4.19"
+        pip install git+https://github.com/mamba-org/boa.git@00a11ffce59f47c0fc576f93d39baf1f8fc92f32
+    - name: Build with mambabuild
+      run: |
+        echo $CONDA_PREFIX
+        conda info
+        CPU_COUNT=2 conda mambabuild .conda/
+    - name: Install local build
+      run: |
+        mamba install --use-local sparc
+    - name: Test simple sparc run
+      run: |
+        cd tests/Cu_FCC/standard/
+        mpirun -n 2 sparc -name Cu_FCC
+    - name: Perform comprehensive tests using `quick_run`
+      run: |
+        cp $(which sparc) lib/
+        cd tests
+        export LD_LIBRARY_PATH=${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH}
+        python SPARC_testing_script.py quick_run | tee output
+        n_failed=$(grep -o 'Tests failed: [0-9]\+' output | grep -o '[0-9]\+$')
+        # Force fail, see what happens
+        unset LD_LIBRARY_PATH
+        python -c "import os, re; match = re.findall(r'Tests failed: (\d+)', open('output').read()); [print('All pass'), os._exit(0)] if int(match[0]) == 0 else [print('Failed'), os._exit(1)]"
+        rm -rf output

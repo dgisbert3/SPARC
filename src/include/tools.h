@@ -13,7 +13,7 @@
 #define TOOL_H
 
 #ifdef USE_MKL
-    #define MKL_Complex16 double complex
+    #define MKL_Complex16 double _Complex
     #include <mkl.h>
 #endif
 #ifdef USE_FFTW
@@ -63,6 +63,31 @@ int strcmpi(const char *p1, const char *p2);
  * @ref  LeetCode problem https://leetcode.com/problems/simplify-path/.
  */
 void simplifyPath(char* path, char *newpath, size_t newlen);
+
+
+
+/**
+ * @brief Exact file path from a file name.
+ * 
+ * @param filename File name.
+ * @param path (OUTPUT) Path (relative or absolute) where the file is located.
+ * @param maxlen Maximum length of the path.
+ */
+void extract_path_from_file(const char *filename, char *path, int maxlen);
+
+
+/**
+ * @brief Combine a path and a file name and simplify the path.
+ *        
+ * If the file name is already provided in the absolute path form, then
+ * path is ignored. Otherwise, the new file name would be a simplified path
+ * equivalent to "path/fname".
+ * 
+ * @param path The path relative to which fname is given.
+ * @param fname The name provided relative to path.
+ * @param newfname (OUTPUT) The new file name.
+ */
+void combine_path_filename(const char *path, const char *fname, char *newfname, int maxlen);
 
 
 /**
@@ -226,7 +251,7 @@ void Vector2Norm(const double *Vec, const int len, double *vec_2norm, MPI_Comm c
  * @brief   Calculate global 2-norm of a vector among the given communicator. 
  *          
  */
-void Vector2Norm_complex(const double complex *Vec, const int len, double *vec_2norm, MPI_Comm comm);
+void Vector2Norm_complex(const double _Complex *Vec, const int len, double *vec_2norm, MPI_Comm comm);
 
 
 /**
@@ -246,7 +271,7 @@ void VectorDotProduct_wt(const double *Vec1, const double *Vec2, const double *I
  * @brief   Calculate global 2-norm of a vector among the given communicator. 
  *          
  */
-void VectorDotProduct_complex(const double complex *Vec1, const double complex *Vec2, const int len, double *vec_dot, MPI_Comm comm);
+void VectorDotProduct_complex(const double _Complex *Vec1, const double _Complex *Vec2, const int len, double *vec_dot, MPI_Comm comm);
 
 
 /**
@@ -254,6 +279,11 @@ void VectorDotProduct_complex(const double complex *Vec1, const double complex *
  *          
  */
 void VectorSum(const double *Vec, const int len, double *vec_sum, MPI_Comm comm);
+
+/**
+ * @brief   Calculate global weighted sum of a vector among the given communicator. 
+ */
+void VectorSum_wt(const double *Vec, const double *weight, const int len, double *vec_sum, MPI_Comm comm);
 
 
 /**
@@ -298,7 +328,7 @@ void SetRandMat(double *Mat, int m, int n, double rand_min, double rand_max, MPI
  * @param m     Number of rows of the local copy of the matrix.
  * @param n     Number of columns of the local part of the matrix.
  */
-void SetRandMat_complex(double complex *Mat, int m, int n, double rand_min, double rand_max, MPI_Comm comm);
+void SetRandMat_complex(double _Complex *Mat, int m, int n, double rand_min, double rand_max, MPI_Comm comm);
 
 
 /**
@@ -323,7 +353,7 @@ void SeededRandVec (
  *          execution.
  */
 void SeededRandVec_complex (
-	double complex *Vec, const int DMVert[6], const int gridsizes[3],
+	double _Complex *Vec, const int DMVert[6], const int gridsizes[3],
 	const double rand_min, const double rand_max,
 	const int seed_offset
 );
@@ -437,7 +467,7 @@ void RealSphericalHarmonic(const int len, double *x, double *y,double *z, double
  *          Only for l = 0, 1, ..., 6.
  */
 void ComplexSphericalHarmonic(const int len, double *x, double *y,double *z, double *r, 
-                            const int l, const int m, double complex *Ylm);
+                            const int l, const int m, double _Complex *Ylm);
 
 
 void Calc_dist(SPARC_OBJ *pSPARC, int nxp, int nyp, int nzp, double x0_i_shift, double y0_i_shift, double z0_i_shift, double *R, double rchrg, int *count_interp);
@@ -457,9 +487,30 @@ void Calc_dist(SPARC_OBJ *pSPARC, int nxp, int nyp, int nzp, double x0_i_shift, 
  * @param comm       MPI communicator.
  */
 void print_vec(
-    double *x, int *gridsizes, int *DMVertices, 
+    void *x, int *gridsizes, int *DMVertices, 
+    int unit_size, char *fname, MPI_Comm comm
+);
+
+/**
+ * @brief   Read a 3D-vector from file and distributed in comm.
+ *
+ *          This routine reads a vector from a file by rank 0 and distributed 
+ *          in comm by domain decomposition.
+ *
+ * @param x          Local part of the vector (output).
+ * @param gridsizes  Array of length 3, total number of nodes in each direction. 
+ * @param DMVertices Array of length 6, domain vertices of the local pieces of x.
+ * @param option     the format of data, 0 - a vertical vector, 1 - cube
+ * @param fname      The name of the file to which the vector will be read.
+ * @param comm       MPI communicator.
+ */
+void read_vec(
+    double *x, int *gridsizes, int *DMVertices, int option,
     char *fname, MPI_Comm comm
 );
+
+
+void read_cube(int Nx_, int Ny_, int Nz_, double *rho, char *fname);
 
 
 /**
@@ -532,5 +583,108 @@ void FFTW_MDiFFT_real(int *dim_sizes, double _Complex *c2r_3dinput, double *c2r_
  *          From Numerical Recipes
  */
 double expint(const int n, const double x);
+
+/**
+ * @brief Restrict any function defined on a FD grid to a sub-grid by extracting
+ *        the values that fall in the sub-grid.
+ *
+ *        Note that all the input indices for v_i are relative to the grid owned
+ *        by the current process, while the indices for v_o are relative to the
+ *        sub-grid in the current process.
+ *
+ * @param v_i              : Input data on the original grid
+ * @param v_o (OUT)        : Output data on the sub-grid
+ * @param stride_y_o       : Distance between v_o(i, j, k) and v_o(i, j+1, k)
+ * @param stride_y_i       : Distance between v_i(i, j, k) and v_i(i, j+1, k)
+ * @param stride_z_o       : Distance between v_o(i, j, k) and v_o(i, j, k+1)
+ * @param stride_z_i       : Distance between v_i(i, j, k) and v_i(i, j, k+1)
+ * @param [x_spos, x_epos] : X index range of v_o that will be computed
+ * @param [y_spos, y_epos] : Y index range of v_o that will be computed
+ * @param [z_spos, z_epos] : Z index range of v_o that will be computed
+ * @param x_i_spos         : X start index in v_i that will be restricted
+ * @param y_i_spos         : Y start index in v_i that will be restricted
+ * @param z_i_spos         : Z start index in v_i that will be restricted
+ *
+ */
+void restrict_to_subgrid(
+    const double *v_i,    double *v_o,
+    const int stride_y_o, const int stride_y_i,
+    const int stride_z_o, const int stride_z_i,
+    const int x_o_spos,   const int x_o_epos,
+    const int y_o_spos,   const int y_o_epos,
+    const int z_o_spos,   const int z_o_epos,
+    const int x_i_spos,   const int y_i_spos,
+    const int z_i_spos
+);
+
+
+/**
+ * @brief change a = [b c] to a = [b; c] in-place as in Matlab 
+ *        b and c have the same size nrow x ncol
+ *
+ * @param a (OUT)    : Input array
+ * @param nrow       : number of rows of b or c
+ * @param ncol       : number of columns of b or c
+ *
+ */
+void Row2Col(void *a, const int nrow, const int ncol, const size_t unit_size);
+
+/**
+ * @brief change a = [b; c] to a = [b c] in-place as in Matlab 
+ *        b and c have the same size nrow x ncol
+ *
+ * @param a (OUT)    : Input array
+ * @param nrow       : number of rows of b or c
+ * @param ncol       : number of columns of b or c
+ *
+ */
+void Col2Row(void *a, const int nrow, const int ncol, const size_t unit_size);
+
+
+/**
+ * @brief   Printing matrix
+ */
+void print_matrix(double *A, int nrow, int ncol, char ACC);
+
+
+/** @ brief   Copy column-major matrix block
+ *
+ *  @param unit_size  Size of data element in bytes (double == 8, double _Complex == 16)
+ *  @param src_       Pointer to the top-left element of the source matrix 
+ *  @param lds        Leading dimension of the source matrix
+ *  @param nrow       Number of rows to copy
+ *  @param ncol       Number of columns to copy
+ *  @param dst_       Pointer to the top-left element of the destination matrix
+ *  @param ldd        Leading dimension of the destination matrix
+ */
+void copy_mat_blk(
+    const size_t unit_size, const void *src_, const int lds, 
+    const int nrow, const int ncol, void *dst_, const int ldd
+);
+
+/**
+ * @brief    Reshape into block separation from Cartesian order of a vector in domain parallelization
+ *          
+ *          The block separation of a vector means that the vector is in the order
+ *          [core0, core1, core2,...], corei is the part in i-th core of domain communicator
+ *          Cartesian order means that the vector is in the order (x,y,z)
+ */
+void cart_to_block_dp(void *vec_cart, int ncol, int **DMVertices, int size_comm, 
+                    int Nx, int Ny, int Nd, void *vec_bdp, int unit_size);
+
+/**
+ * @brief   Reshape into Cartesian order from the block separation of a vector in domain parallelization
+ *          
+ *          The block separation of a vector means that the vector is in the order
+ *          [core0, core1, core2,...], corei is the part in i-th core of domain communicator
+ *          Cartesian order means that the vector is in the order (x,y,z)
+ */
+void block_dp_to_cart(void *vec_bdp, int ncol, int **DMVertices, int *displs, int size_comm, 
+                    int Nx, int Ny, int Nd, void *vec_cart, int unit_size);
+
+/**
+ * @brief   Transfer vectors from dmcomm to kptcomm_topo
+ */
+void Transfer_dmcomm_to_kptcomm_topo(SPARC_OBJ *pSPARC, int Nspinor, int ncols, void *vec_dmcomm, void *vec_kptcomm_topo, int unit_size);
 
 #endif // TOOL_H

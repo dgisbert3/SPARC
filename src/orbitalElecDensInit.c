@@ -11,8 +11,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include <mpi.h>
+#include <string.h> 
 /* LAPACK, LAPACKE routines */
 #ifdef USE_MKL
     #include <mkl.h>
@@ -23,8 +25,79 @@
 #include "orbitalElecDensInit.h"
 #include "isddft.h"
 #include "tools.h"
-
+#include "electronDensity.h"
+#include "parallelization.h"
+#include "readfiles.h"
 #define max(x,y) ((x)>(y)?(x):(y))
+
+
+/**
+ * @brief Read vector(s) from Cube file(s) and distribute in comm.
+ * 
+ * @param pSPARC 
+ * @param filenames An array of n file names.
+ * @param data_dist The pointer to the final distributed vector.
+ * @param n Number of files (also number of columns of data_dist).
+ * @param DMverts Domain vertices of the local distributed domain.
+ * @param comm Communicator with a Cartesian topology.
+ */
+void read_cube_and_dist_vec(
+    SPARC_OBJ *pSPARC, char filenames[3][L_STRING+L_PSD], double *data_dist, int n,
+    int DMverts[6], MPI_Comm comm)
+{
+    if (comm == MPI_COMM_NULL) return;
+    int rank;
+    MPI_Comm_rank(comm, &rank);
+
+    // initialize D2D for distributing the vectors from root to comm
+    MPI_Comm send_comm;
+    if (rank != 0) {
+        send_comm = MPI_COMM_NULL;
+    } else {
+        int dims[3] = {1,1,1}, periods[3] = {1,1,1};
+        // create a cartesian topology on one process (rank 0)
+        MPI_Cart_create(MPI_COMM_SELF, 3, dims, periods, 0, &send_comm);
+    }
+    int gridsizes[3];
+    gridsizes[0] = pSPARC->Nx;
+    gridsizes[1] = pSPARC->Ny;
+    gridsizes[2] = pSPARC->Nz;
+    int sdims[3], sVert[6], rdims[3], periods[3], coords[3];
+    sdims[0] = sdims[1] = sdims[2] = 1;
+    sVert[0] = 0; sVert[1] = gridsizes[0] - 1;
+    sVert[2] = 0; sVert[3] = gridsizes[1] - 1;
+    sVert[4] = 0; sVert[5] = gridsizes[2] - 1;
+
+    MPI_Cart_get(comm, 3, rdims, periods, coords);
+    D2D_OBJ d2d_sender, d2d_recvr;
+    Set_D2D_Target(&d2d_sender, &d2d_recvr, gridsizes, sVert, DMverts, send_comm, sdims, comm, rdims, comm);
+
+    int DMnx = DMverts[1] - DMverts[0] + 1;
+    int DMny = DMverts[3] - DMverts[2] + 1;
+    int DMnz = DMverts[5] - DMverts[4] + 1;
+    int DMnd = DMnx * DMny * DMnz;
+
+    double *vec_in = NULL;
+    // loop over the n filenames
+    for (int i = 0; i < n; i++) {
+        // let root process read the density from file
+        if (rank == 0) {
+            vec_in = read_vec_cube(pSPARC, filenames[i]);
+        }
+
+        // distribute the density from root to comm
+        D2D(&d2d_sender, &d2d_recvr, gridsizes, sVert, vec_in, DMverts, data_dist+i*DMnd, send_comm, sdims, comm, rdims, comm, sizeof(double));
+
+        if (rank == 0) free(vec_in);
+    }
+
+    Free_D2D_Target(&d2d_sender, &d2d_recvr, send_comm, comm);
+
+    if (rank == 0) {
+        MPI_Comm_free(&send_comm);
+    }
+}
+
 
 
 /**
@@ -38,64 +111,90 @@ void Init_electronDensity(SPARC_OBJ *pSPARC) {
 #endif
     
     if (pSPARC->dmcomm_phi != MPI_COMM_NULL) {
-        int  i, DMnd;
-        DMnd = pSPARC->Nd_d * (2*pSPARC->Nspin - 1);
-        // for 1st Relax step/ MDstep, set electron density to be sum of atomic potentials
+        int DMnd = pSPARC->Nd_d;
+        // for 1st Relax step/ MDstep, set initial electron density
         if( (pSPARC->elecgs_Count - pSPARC->StressCount) == 0){
-            // TODO: implement restart based on previous MD electron density. Things to consider:
-            //if (pSPARC->RestartFlag) {
+            // read initial density from file 
+            if (pSPARC->BandStructFlag == 1) {
+                char inputDensFnames[3][L_STRING+L_PSD];
+                // set up input density filename
+                if (rank == 0) {
+                    char INPUT_DIR[L_PSD];
+                    extract_path_from_file(pSPARC->filename, INPUT_DIR, L_PSD);
+                    combine_path_filename(INPUT_DIR, pSPARC->InDensTCubFilename, inputDensFnames[0], L_STRING+L_PSD);
+                    combine_path_filename(INPUT_DIR, pSPARC->InDensUCubFilename, inputDensFnames[1], L_STRING+L_PSD);
+                    combine_path_filename(INPUT_DIR, pSPARC->InDensDCubFilename, inputDensFnames[2], L_STRING+L_PSD);
+                }
+
+                int nFileToRead = pSPARC->densfilecount;
+                read_cube_and_dist_vec(
+                    pSPARC, inputDensFnames, pSPARC->electronDens, nFileToRead,
+                    pSPARC->DMVertices, pSPARC->dmcomm_phi
+                );
+            } else {
+                // TODO: implement restart based on previous MD electron density. Things to consider:
                 // 1) Each processor stores the density in its memory in a separate file at the end of MD (same frequency as the main restart file).
                 // 2) After all processors have printed their density, a counter in main restart file will be updated.
                 // 3) If the counter says "success" then use the density from previous step as guess otherwise start from a guess based on electronDens_at.
                 // 4) Change (pSPARC->elecgs_Count + !pSPARC->RestartFlag) > 3  condition to pSPARC->elecgs_Count >= 3, below
-                //printf("\n\n Implement density extrapolation when restart flag is on!! \n\n");
-            //} else {
-            for (i = 0; i < DMnd; i++)
-                pSPARC->electronDens[i] = pSPARC->electronDens_at[i];   
-            //}
+                
+                // copy initial electron density
+                memcpy(pSPARC->electronDens, pSPARC->electronDens_at, DMnd * sizeof(double));
+                // get intial magnetization
+                if (pSPARC->spin_typ == 1) {
+                    memcpy(pSPARC->mag, pSPARC->mag_at, DMnd * sizeof(double));
+                    Calculate_diagonal_Density(pSPARC, DMnd, pSPARC->mag, pSPARC->electronDens, pSPARC->electronDens+DMnd, pSPARC->electronDens+2*DMnd);
+                } else if (pSPARC->spin_typ == 2) {
+                    memcpy(pSPARC->mag+DMnd, pSPARC->mag_at, DMnd * 3 * sizeof(double));
+                    Calculate_Magnorm(pSPARC, DMnd, pSPARC->mag+DMnd*1, pSPARC->mag+DMnd*2, pSPARC->mag+DMnd*3, pSPARC->mag);
+                    Calculate_diagonal_Density(pSPARC, DMnd, pSPARC->mag, pSPARC->electronDens, pSPARC->electronDens+DMnd, pSPARC->electronDens+2*DMnd);
+                }
+            }
+            
             // Storing atom position needed for charge extrapolation in future Relax/MD steps
 			if(pSPARC->MDFlag == 1 || pSPARC->RelaxFlag == 1){
-            	for(i = 0; i < 3 * pSPARC->n_atom; i++)
+            	for(int i = 0; i < 3 * pSPARC->n_atom; i++)
         			pSPARC->atom_pos_0dt[i] = pSPARC->atom_pos[i];
 			}
         } else {
             if( (pSPARC->elecgs_Count - pSPARC->StressCount) >= 3 && (pSPARC->MDFlag == 1 || pSPARC->RelaxFlag == 1)){
-#ifdef DEBUG
+            #ifdef DEBUG
         		if(!rank)
         		    printf("Using charge extrapolation for density guess\n");
-#endif
-        		// Test if needed by using unscaled atomic charge density 
-                // double scal_fac = (pSPARC->NetCharge - pSPARC->PosCharge) / pSPARC->NegCharge;    
-        		// for(i = 0; i < DMnd; i++)
-            	//	pSPARC->electronDens_at[i] /= scal_fac;
+            #endif
 
                 // Perform charge extrapolation using scaled rho_at     
-       			for(i = 0; i < pSPARC->Nd_d; i++){
+       			for(int i = 0; i < DMnd; i++){
             		pSPARC->electronDens[i] = pSPARC->electronDens_at[i] + pSPARC->delectronDens[i]; // extrapolated density for the next step
                		if(pSPARC->electronDens[i] < 0.0)
                         pSPARC->electronDens[i] = pSPARC->xc_rhotol; // 1e-14
         		}
-
-                double rho_mag;
-                if(pSPARC->spin_typ != 0){
-                    for(i = 0; i < pSPARC->Nd_d; i++){
-                        rho_mag = pSPARC->electronDens[pSPARC->Nd_d+i] - pSPARC->electronDens[2*pSPARC->Nd_d+i]; // from previous step
-                        pSPARC->electronDens[pSPARC->Nd_d+i] = (pSPARC->electronDens[i] + rho_mag)/2.0;
-                        pSPARC->electronDens[2*pSPARC->Nd_d+i] = (pSPARC->electronDens[i] - rho_mag)/2.0;
-                    }
-                }
         	}
             
             // Scale density
 			double int_rho = 0.0, vscal;        
-        	for (i = 0; i < pSPARC->Nd_d; i++) {
-           		int_rho += pSPARC->electronDens[i];
-           	}
-            int_rho *= pSPARC->dV;
+        	if (pSPARC->CyclixFlag) {
+                for (int i = 0; i < DMnd; i++) {
+                    int_rho += pSPARC->electronDens[i] * pSPARC->Intgwt_phi[i];
+                }
+            } else {
+                for (int i = 0; i < DMnd; i++) {
+                    int_rho += pSPARC->electronDens[i];
+                }
+                int_rho *= pSPARC->dV;
+            }
             MPI_Allreduce(MPI_IN_PLACE, &int_rho, 1, MPI_DOUBLE, MPI_SUM, pSPARC->dmcomm_phi); 	
             vscal = pSPARC->PosCharge / int_rho;
-            for (i = 0; i < DMnd; i++)
+            for (int i = 0; i < DMnd; i++)
             	pSPARC->electronDens[i] *= vscal;
+            
+            if (pSPARC->spin_typ != 0) {
+                for(int i = 0; i < DMnd; i++){
+                    double rho_mag = pSPARC->mag[i];
+                    pSPARC->electronDens[DMnd+i] = (pSPARC->electronDens[i] + rho_mag)/2.0;
+                    pSPARC->electronDens[2*DMnd+i] = (pSPARC->electronDens[i] - rho_mag)/2.0;
+                }
+            }
 		}
 	}
 }
@@ -193,19 +292,19 @@ void Init_orbital(SPARC_OBJ *pSPARC)
     if (rank == 0) printf("Initializing Kohn-Sham orbitals ... \n");
 #endif
 
-    int k, n, i, DMnd, size_k, len_tot, size_s, spn_i, spinor;
+    int k, n, DMnd, DMndsp, size_k, len_tot, spinor;
 #ifdef DEBUG
     double t1, t2;
 #endif
     // Multiply a factor for a spinor wavefunction
-    DMnd = pSPARC->Nd_d_dmcomm * pSPARC->Nspinor;
-    size_k = DMnd * pSPARC->Nband_bandcomm;
+    DMnd = pSPARC->Nd_d_dmcomm;
+    DMndsp = DMnd * pSPARC->Nspinor_spincomm;
+    size_k = DMndsp * pSPARC->Nband_bandcomm;
     // notice that in processors not for orbital calculations len_tot = 0
-    size_s = size_k * pSPARC->Nkpts_kptcomm;
+    len_tot = size_k * pSPARC->Nkpts_kptcomm;
     
-    // Multiply a factor for a spin polarized calculation
-    len_tot = size_s * pSPARC->Nspin_spincomm;
-    
+    int gridsizes[3] = {pSPARC->Nx, pSPARC->Ny, pSPARC->Nz};
+
     // for 1st Relax step, set electron density to be sum of atomic potentials
     if((pSPARC->elecgs_Count) == 0){
         if (pSPARC->isGammaPoint){
@@ -225,32 +324,25 @@ void Init_orbital(SPARC_OBJ *pSPARC)
             t1 = MPI_Wtime();
 #endif
             if (pSPARC->FixRandSeed == 1) {
-                int gridsizes[3];
-                gridsizes[0] = pSPARC->Nx;
-                gridsizes[1] = pSPARC->Ny;
-                gridsizes[2] = pSPARC->Nz;
-                //int size_kg = pSPARC->Nd * pSPARC->Nstates;
-                int size_sg = pSPARC->Nd * pSPARC->Nstates;
-                for(spn_i = 0; spn_i < pSPARC->Nspin_spincomm; spn_i++) {
-                    //int kg  = pSPARC->kpt_start_indx; // global kpt index
-                    int sg  = pSPARC->spin_start_indx + spn_i; // global spin index
-                    for (n = 0; n < pSPARC->Nband_bandcomm; n++) {
-                        int ng = pSPARC->band_start_indx + n; // global band index
-                        int shift_g = sg * size_sg + ng * pSPARC->Nd; // global shift
-                        int shift   = spn_i * size_s + n  * DMnd; // local shift
+                int Ndsp = pSPARC->Nd * pSPARC->Nspinor;
+                
+                for (n = 0; n < pSPARC->Nband_bandcomm; n++) {
+                    int ng = pSPARC->band_start_indx + n; // global band index
+                    for (spinor = 0; spinor < pSPARC->Nspinor_spincomm; spinor ++) {
+                        int spinorg = pSPARC->spinor_start_indx + spinor;
+                        int shift_g = ng * Ndsp + spinorg * pSPARC->Nd; // global shift
+                        int shift   = n  * DMndsp + spinor * DMnd; // local shift
                         double *Psi_kn = pSPARC->Xorb + shift;
                         SeededRandVec(Psi_kn, pSPARC->DMVertices_dmcomm, gridsizes, -0.5, 0.5, shift_g);
                     }
                 }
             } else {
-                for(spn_i = 0; spn_i < pSPARC->Nspin_spincomm; spn_i++) {
-                    SetRandMat(pSPARC->Xorb + spn_i*size_s , DMnd, pSPARC->Nband_bandcomm, -0.5, 0.5, pSPARC->spincomm);
-                }
+                SetRandMat(pSPARC->Xorb, DMndsp, pSPARC->Nband_bandcomm, -0.5, 0.5, pSPARC->spincomm);
             }
         } else {
             // allocate memory in the very first relax/MD step
-            pSPARC->Xorb_kpt = (double complex *) malloc( len_tot * sizeof(double complex) );
-            pSPARC->Yorb_kpt = (double complex *) malloc( size_k * sizeof(double complex) );
+            pSPARC->Xorb_kpt = (double _Complex *) malloc( len_tot * sizeof(double _Complex) );
+            pSPARC->Yorb_kpt = (double _Complex *) malloc( size_k * sizeof(double _Complex) );
             if (pSPARC->Xorb_kpt == NULL || pSPARC->Yorb_kpt == NULL) {
                 printf("\nMemory allocation failed!\n");
                 exit(EXIT_FAILURE);
@@ -264,33 +356,25 @@ void Init_orbital(SPARC_OBJ *pSPARC)
             t1 = MPI_Wtime();
 #endif                
             if (pSPARC->FixRandSeed == 1) {
-                int gridsizes[3];
-                gridsizes[0] = pSPARC->Nx;
-                gridsizes[1] = pSPARC->Ny;
-                gridsizes[2] = pSPARC->Nz;
-                int size_kg = pSPARC->Nd * pSPARC->Nspinor * pSPARC->Nstates;
-                int size_sg = size_kg * pSPARC->Nkpts_sym;
-                for(spn_i = 0; spn_i < pSPARC->Nspin_spincomm; spn_i++) {
-                    int sg  = pSPARC->spin_start_indx + spn_i; // global spin index
-                    for (k = 0; k < pSPARC->Nkpts_kptcomm; k++) {
-                        int kg  = pSPARC->kpt_start_indx + k; // global kpt index
-                        for (n = 0; n < pSPARC->Nband_bandcomm; n++) {
-                            int ng = pSPARC->band_start_indx + n; // global band index
-                            int shift_g = sg * size_sg + kg * size_kg + ng * pSPARC->Nd * pSPARC->Nspinor; // global shift
-                            int shift   = spn_i * size_s + k  * size_k  + n  * DMnd; // local shift
-                            for (spinor = 0; spinor < pSPARC->Nspinor; spinor ++) {
-                                double complex *Psi_kn = pSPARC->Xorb_kpt + shift + spinor * pSPARC->Nd_d_dmcomm;
-                                SeededRandVec_complex(Psi_kn, pSPARC->DMVertices_dmcomm, gridsizes, -0.5, 0.5, shift_g);
-                            }
+                int Ndsp = pSPARC->Nd * pSPARC->Nspinor;
+                int size_kg = Ndsp * pSPARC->Nstates;
+
+                for (k = 0; k < pSPARC->Nkpts_kptcomm; k++) {
+                    int kg  = pSPARC->kpt_start_indx + k; // global kpt index
+                    for (n = 0; n < pSPARC->Nband_bandcomm; n++) {
+                        int ng = pSPARC->band_start_indx + n; // global band index
+                        for (spinor = 0; spinor < pSPARC->Nspinor_spincomm; spinor ++) {
+                            int spinorg = pSPARC->spinor_start_indx + spinor;
+                            int shift_g = kg * size_kg + ng * Ndsp + spinorg * pSPARC->Nd; // global shift
+                            int shift   = k  * size_k  + n  * DMndsp + spinor * DMnd; // local shift
+                            double _Complex *Psi_kn = pSPARC->Xorb_kpt + shift;
+                            SeededRandVec_complex(Psi_kn, pSPARC->DMVertices_dmcomm, gridsizes, -0.5, 0.5, shift_g);
                         }
                     }
-                }    
+                }
+                
             } else {
-                for(spn_i = 0; spn_i < pSPARC->Nspin_spincomm; spn_i++) {
-                    for (i = 0; i < pSPARC->Nkpts_kptcomm; i++) {
-                        SetRandMat_complex(pSPARC->Xorb_kpt + i*size_k + spn_i*size_s, DMnd, pSPARC->Nband_bandcomm, -0.5, 0.5, pSPARC->spincomm);
-                    }
-                }    
+                SetRandMat_complex(pSPARC->Xorb_kpt, DMndsp, pSPARC->Nband_bandcomm*pSPARC->Nkpts_kptcomm, -0.5, 0.5, pSPARC->spincomm); 
             }
         }        
 #ifdef DEBUG

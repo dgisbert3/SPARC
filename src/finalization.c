@@ -23,8 +23,11 @@
 #include "exactExchangeFinalization.h"
 #include "d3finalization.h"
 #include "vdWDFfinalization.h"
-#include "MGGAfinalization.h"
+#include "mGGAfinalization.h"
 #include "sqFinalization.h"
+#include "cyclix_tools.h"
+#include "sparc_mlff_interface.h"
+
 /* ScaLAPACK routines */
 #ifdef USE_MKL
     #include "blacs.h"     // Cblacs_*
@@ -45,12 +48,13 @@
  */
 void Finalize(SPARC_OBJ *pSPARC)
 {
+    Free_basic(pSPARC);
     if (pSPARC->SQFlag == 1) {
         Free_SQ(pSPARC);
-    } else {
+    } else if (pSPARC->mlff_flag != 21) {
         Free_SPARC(pSPARC);
-    }
-    
+    } 
+
     FILE *output_fp;
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -83,100 +87,14 @@ void Finalize(SPARC_OBJ *pSPARC)
     }
 }
 
-
-
 /**
- * @brief   Deallocates dynamic arrays in SPARC.
+ * @brief   Deallocates basic arrays in SPARC.
  */
-void Free_SPARC(SPARC_OBJ *pSPARC) {
+void Free_basic(SPARC_OBJ *pSPARC) {
     int i;
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-    // free initial guess vector for Lanczos
-    if (pSPARC->isGammaPoint && pSPARC->kptcomm_topo != MPI_COMM_NULL) 
-        free(pSPARC->Lanczos_x0);
-        
-    if (pSPARC->isGammaPoint != 1 && pSPARC->kptcomm_topo != MPI_COMM_NULL) 
-        free(pSPARC->Lanczos_x0_complex);    
-
-    if (pSPARC->dmcomm_phi != MPI_COMM_NULL) {
-        free(pSPARC->electronDens_at);
-        free(pSPARC->electronDens_core);
-        free(pSPARC->electronDens);
-        free(pSPARC->psdChrgDens);
-        free(pSPARC->psdChrgDens_ref);
-        free(pSPARC->Vc);
-        free(pSPARC->XCPotential);
-        free(pSPARC->e_xc);
-        if(strcmpi(pSPARC->XC,"GGA_PBE") == 0 || strcmpi(pSPARC->XC,"GGA_RPBE") == 0 || strcmpi(pSPARC->XC,"GGA_PBEsol") == 0
-            || strcmpi(pSPARC->XC,"PBE0") == 0 || strcmpi(pSPARC->XC,"HF") == 0 || strcmpi(pSPARC->XC,"HSE") == 0 || strcmpi(pSPARC->XC,"SCAN") == 0
-            || strcmpi(pSPARC->XC,"vdWDF1") == 0 || strcmpi(pSPARC->XC,"vdWDF2") == 0){
-            free(pSPARC->Dxcdgrho);
-        }    
-        free(pSPARC->elecstPotential);
-        free(pSPARC->Veff_loc_dmcomm_phi);
-        free(pSPARC->mixing_hist_xk);
-        free(pSPARC->mixing_hist_fk);
-        free(pSPARC->mixing_hist_fkm1);
-        free(pSPARC->mixing_hist_xkm1);
-        free(pSPARC->mixing_hist_Xk);
-        free(pSPARC->mixing_hist_Fk);
-
-        // for using QE scf error definition
-        if (pSPARC->scf_err_type == 1) {
-            free(pSPARC->rho_dmcomm_phi_in);
-            free(pSPARC->phi_dmcomm_phi_in);
-        }
-
-        // for denstiy mixing, extra memory is created to store potential history
-        if (pSPARC->MixingVariable == 0) { 
-            free(pSPARC->Veff_loc_dmcomm_phi_in);
-        }
-        free(pSPARC->mixing_hist_Pfk);
-        //free(pSPARC->forces);
-        // free MD and relax stuff
-    	if(pSPARC->MDFlag == 1 || pSPARC->RelaxFlag == 1 || pSPARC->RelaxFlag == 3){
-      		free(pSPARC->delectronDens);
-      		free(pSPARC->delectronDens_0dt);
-      		free(pSPARC->delectronDens_1dt);
-      		free(pSPARC->delectronDens_2dt);
-      		free(pSPARC->atom_pos_nm);
-      		free(pSPARC->atom_pos_0dt);
-      		free(pSPARC->atom_pos_1dt);
-      		free(pSPARC->atom_pos_2dt);
-    	}
-    }
     
-    if (pSPARC->isGammaPoint){
-        if (pSPARC->dmcomm != MPI_COMM_NULL) {
-            free(pSPARC->Xorb);
-            free(pSPARC->Yorb);
-        }
-    } else {
-        if (pSPARC->dmcomm != MPI_COMM_NULL) {
-            free(pSPARC->Xorb_kpt);
-            free(pSPARC->Yorb_kpt);
-        }
-    }
-
-    #if defined(USE_MKL) || defined(USE_SCALAPACK)
-    if (pSPARC->isGammaPoint) {
-        free(pSPARC->Hp);
-        free(pSPARC->Mp);
-        free(pSPARC->Q);
-    } else {
-        free(pSPARC->Hp_kpt);
-        free(pSPARC->Mp_kpt);
-        free(pSPARC->Q_kpt);
-    }
-    #endif // #if defined(USE_MKL) || defined(USE_SCALAPACK)
-
+    // free variables in all processors
     free(pSPARC->forces);
-    free(pSPARC->lambda);
-    free(pSPARC->occ);
-    free(pSPARC->eigmin);
-    free(pSPARC->eigmax);
     free(pSPARC->FDweights_D1);
     free(pSPARC->FDweights_D2);
     free(pSPARC->localPsd);
@@ -211,51 +129,11 @@ void Free_SPARC(SPARC_OBJ *pSPARC) {
     free(pSPARC->CUTOFF_x);
     free(pSPARC->CUTOFF_y);
     free(pSPARC->CUTOFF_z); 
-    free(pSPARC->IP_displ);
-    if (pSPARC->SOC_Flag) 
-        free(pSPARC->IP_displ_SOC); 
-    
-    // free preconditioner coeff arrays
-    if (pSPARC->MixingPrecond == 2 || pSPARC->MixingPrecond == 3) {
-        free(pSPARC->precondcoeff_a);
-        free(pSPARC->precondcoeff_lambda_sqr);
-    }
+    free(pSPARC->kptWts); 
+    free(pSPARC->k1); 
+    free(pSPARC->k2); 
+    free(pSPARC->k3);
 
-    // free k-points arrays    
-    //if (pSPARC->Nkpts >= 1) {
-        // if (pSPARC->BC != 1) {
-            free(pSPARC->kptWts); 
-            free(pSPARC->k1); 
-            free(pSPARC->k2); 
-            free(pSPARC->k3);
-        // }
-    // }
-
-    if (pSPARC->usefock > 0) {
-        free(pSPARC->k1_hf);
-        free(pSPARC->k2_hf);
-        free(pSPARC->k3_hf);
-        free(pSPARC->kpthf_ind);
-        free(pSPARC->kpthf_ind_red);
-        free(pSPARC->kpthfred2kpthf);
-        free(pSPARC->kpthf_pn);
-        free(pSPARC->kpts_hf_red_list);
-        free(pSPARC->k1_shift);
-        free(pSPARC->k2_shift);
-        free(pSPARC->k3_shift);
-        free(pSPARC->Kptshift_map);
-        free_exx(pSPARC);
-    }
-    
-    if (pSPARC->Nkpts >= 1 && pSPARC->kptcomm_index != -1) {
-        //if (pSPARC->BC != 1) {
-            free(pSPARC->kptWts_loc); 
-            free(pSPARC->k1_loc); 
-            free(pSPARC->k2_loc); 
-            free(pSPARC->k3_loc);
-            //free(pSPARC->lambdakpt);
-        //}
-    }
     // free psd struct components
     for (i = 0; i < pSPARC->Ntypes; i++) {
         free(pSPARC->psd[i].rVloc);
@@ -277,21 +155,154 @@ void Free_SPARC(SPARC_OBJ *pSPARC) {
             free(pSPARC->psd[i].SplineFitUdV_soc);
         }
     }
-    // then free the psd struct itself
     free(pSPARC->psd);
-	if (pSPARC->dmcomm != MPI_COMM_NULL && pSPARC->bandcomm_index >= 0) {
-		free(pSPARC->Veff_loc_dmcomm);
-	}
-    
-    //if (pSPARC->npkpt > 1 && pSPARC->kptcomm_topo != MPI_COMM_NULL) {
-    free(pSPARC->Veff_loc_kptcomm_topo);
-    //}
-      
+
     // free MD stuff
     if(pSPARC->MDFlag == 1) {
       free(pSPARC->ion_vel);
       free(pSPARC->ion_accel);
     }
+    
+    // free variables in dmcomm_phi
+    if (pSPARC->dmcomm_phi != MPI_COMM_NULL) {
+        free(pSPARC->electronDens_at);
+        free(pSPARC->electronDens_core);
+        free(pSPARC->electronDens);
+        if (pSPARC->spin_typ > 0) {
+            free(pSPARC->mag);
+            free(pSPARC->mag_at);
+            free(pSPARC->AtomMag);
+        }
+        free(pSPARC->psdChrgDens);
+        free(pSPARC->psdChrgDens_ref);
+        free(pSPARC->Vc);
+        free(pSPARC->XCPotential);
+        free(pSPARC->e_xc);
+        if(pSPARC->isgradient){
+            free(pSPARC->Dxcdgrho);
+        }    
+        free(pSPARC->elecstPotential);
+        free(pSPARC->Veff_loc_dmcomm_phi);
+        
+        // free MD and relax stuff
+    	if(pSPARC->MDFlag == 1 || pSPARC->RelaxFlag == 1 || pSPARC->RelaxFlag == 3){
+      		free(pSPARC->delectronDens);
+      		free(pSPARC->delectronDens_0dt);
+      		free(pSPARC->delectronDens_1dt);
+      		free(pSPARC->delectronDens_2dt);
+      		free(pSPARC->atom_pos_nm);
+      		free(pSPARC->atom_pos_0dt);
+      		free(pSPARC->atom_pos_1dt);
+      		free(pSPARC->atom_pos_2dt);
+    	}
+
+        if (pSPARC->spin_typ == 2) {
+            free(pSPARC->XCPotential_nc);
+        }
+    }
+
+    // mixing variables
+    if (pSPARC->dmcomm_phi != MPI_COMM_NULL) {
+        free(pSPARC->mixing_hist_xk);
+        free(pSPARC->mixing_hist_fk);
+        free(pSPARC->mixing_hist_fkm1);
+        free(pSPARC->mixing_hist_xkm1);
+        free(pSPARC->mixing_hist_Xk);
+        free(pSPARC->mixing_hist_Fk);
+
+        // saving potential history
+        if (pSPARC->MixingVariable == 1) {
+            free(pSPARC->Veff_loc_dmcomm_phi_in);
+            if (pSPARC->spin_typ == 2) {
+                free(pSPARC->Veff_dia_loc_dmcomm_phi);
+            }
+        }
+
+        if (pSPARC->MixingVariable == 0 && pSPARC->spin_typ) {
+            free(pSPARC->electronDens_in);
+        }
+        
+        free(pSPARC->mixing_hist_Pfk);
+    }
+
+    // free preconditioner coeff arrays
+    if (pSPARC->MixingPrecond == 2 || pSPARC->MixingPrecond == 3) {
+        free(pSPARC->precondcoeff_a);
+        free(pSPARC->precondcoeff_lambda_sqr);
+    }
+
+    if (pSPARC->mlff_flag > 1){
+        free_MLFF(pSPARC->mlff_str);
+        free(pSPARC->mlff_str);
+    }
+}
+
+/**
+ * @brief   Deallocates dynamic arrays in SPARC.
+ */
+void Free_SPARC(SPARC_OBJ *pSPARC) {
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    // free initial guess vector for Lanczos
+    if (pSPARC->isGammaPoint && pSPARC->kptcomm_topo != MPI_COMM_NULL) 
+        free(pSPARC->Lanczos_x0);
+        
+    if (pSPARC->isGammaPoint != 1 && pSPARC->kptcomm_topo != MPI_COMM_NULL) 
+        free(pSPARC->Lanczos_x0_complex);    
+    
+    if (pSPARC->isGammaPoint){
+        if (pSPARC->dmcomm != MPI_COMM_NULL) {
+            free(pSPARC->Xorb);
+            free(pSPARC->Yorb);
+        }
+    } else {
+        if (pSPARC->dmcomm != MPI_COMM_NULL) {
+            free(pSPARC->Xorb_kpt);
+            free(pSPARC->Yorb_kpt);
+        }
+    }
+
+    #if defined(USE_MKL) || defined(USE_SCALAPACK)
+    if (pSPARC->isGammaPoint) {
+        free(pSPARC->Hp);
+        free(pSPARC->Mp);
+        free(pSPARC->Q);
+    } else {
+        free(pSPARC->Hp_kpt);
+        free(pSPARC->Mp_kpt);
+        free(pSPARC->Q_kpt);
+    }
+    #endif // #if defined(USE_MKL) || defined(USE_SCALAPACK)
+
+    // free variables in all processors
+    free(pSPARC->lambda);
+    free(pSPARC->occ);
+    free(pSPARC->eigmin);
+    free(pSPARC->eigmax);
+    free(pSPARC->IP_displ);
+    if (pSPARC->SOC_Flag) 
+        free(pSPARC->IP_displ_SOC); 
+
+    if (pSPARC->usefock > 0) {
+        free_exx(pSPARC);
+    }
+
+    if (pSPARC->CyclixFlag) {
+        free_cyclix(pSPARC);
+    }
+    
+    if (pSPARC->Nkpts >= 1 && pSPARC->kptcomm_index != -1) {
+        free(pSPARC->kptWts_loc); 
+        free(pSPARC->k1_loc); 
+        free(pSPARC->k2_loc); 
+        free(pSPARC->k3_loc);
+    }
+
+	if (pSPARC->dmcomm != MPI_COMM_NULL && pSPARC->bandcomm_index >= 0) {
+		free(pSPARC->Veff_loc_dmcomm);
+	}
+    free(pSPARC->Veff_loc_kptcomm_topo);
     
     // free D2D targets between phi comm and psi comm
     Free_D2D_Target(&pSPARC->d2d_dmcomm_phi, &pSPARC->d2d_dmcomm, pSPARC->dmcomm_phi, 
@@ -311,14 +322,14 @@ void Free_SPARC(SPARC_OBJ *pSPARC) {
     if (pSPARC->d3Flag == 1) {
         free_D3_coefficients(pSPARC); // this function is moved from electronicGroundState.c
     }
-    if (pSPARC->vdWDFFlag != 0){
+    if (pSPARC->ixc[3] != 0){
         vdWDF_free(pSPARC);
     }
-    if(pSPARC->mGGAflag == 1) {
+    if (pSPARC->ixc[2] == 1) {
         free_MGGA(pSPARC);
     }
-                     
-    // free communicators
+    
+    // free communicators 
     if (pSPARC->dmcomm_phi != MPI_COMM_NULL) {
         if (pSPARC->cell_typ != 0) {
             MPI_Comm_free(&pSPARC->comm_dist_graph_phi);
@@ -398,6 +409,12 @@ void Free_scfvar(SPARC_OBJ *pSPARC) {
                     free( pSPARC->nlocProj[ityp].Chi[iat] );
                 }
                 free( pSPARC->nlocProj[ityp].Chi );
+                if (pSPARC->CyclixFlag) {
+                    for (iat = 0; iat < pSPARC->Atom_Influence_nloc[ityp].n_atom; iat++) {
+                        free( pSPARC->nlocProj[ityp].Chi_cyclix[iat] );
+                    }
+                    free( pSPARC->nlocProj[ityp].Chi_cyclix);
+                }
             }
             free(pSPARC->nlocProj);
         }
@@ -414,6 +431,12 @@ void Free_scfvar(SPARC_OBJ *pSPARC) {
                     free( pSPARC->nlocProj_kptcomm[ityp].Chi[iat] );
                 }
                 free( pSPARC->nlocProj_kptcomm[ityp].Chi );
+                if (pSPARC->CyclixFlag) {
+                    for (iat = 0; iat < pSPARC->Atom_Influence_nloc_kptcomm[ityp].n_atom; iat++) {
+                        free( pSPARC->nlocProj_kptcomm[ityp].Chi_cyclix[iat] );
+                    }
+                    free( pSPARC->nlocProj_kptcomm[ityp].Chi_cyclix );
+                }
             }
             free(pSPARC->nlocProj_kptcomm);
         }
@@ -430,6 +453,12 @@ void Free_scfvar(SPARC_OBJ *pSPARC) {
                     free( pSPARC->nlocProj[ityp].Chi_c[iat] );
                 }
                 free(pSPARC->nlocProj[ityp].Chi_c);
+                if (pSPARC->CyclixFlag) {
+                    for (iat = 0; iat < pSPARC->Atom_Influence_nloc[ityp].n_atom; iat++) {
+                        free( pSPARC->nlocProj[ityp].Chi_c_cyclix[iat] );
+                    }
+                    free( pSPARC->nlocProj[ityp].Chi_c_cyclix);
+                }
             }
             if (pSPARC->SOC_Flag == 1) {
                 for (ityp = 0; ityp < pSPARC->Ntypes; ityp++) { 
@@ -437,8 +466,14 @@ void Free_scfvar(SPARC_OBJ *pSPARC) {
                     if (! pSPARC->nlocProj[ityp].nprojso) continue;
                     for (iat = 0; iat < pSPARC->Atom_Influence_nloc[ityp].n_atom; iat++) {
                         free( pSPARC->nlocProj[ityp].Chiso[iat] );
+                        if (pSPARC->CyclixFlag) {
+                            free(pSPARC->nlocProj[ityp].Chiso_cyclix[iat]);
+                        }
                     }
                     free( pSPARC->nlocProj[ityp].Chiso );
+                    if (pSPARC->CyclixFlag) {
+                        free(pSPARC->nlocProj[ityp].Chiso_cyclix);
+                    }
                 }
                 for (ityp = 0; ityp < pSPARC->Ntypes; ityp++) { 
                     // if (! pSPARC->nlocProj[ityp].nproj) continue;
@@ -447,10 +482,20 @@ void Free_scfvar(SPARC_OBJ *pSPARC) {
                         free( pSPARC->nlocProj[ityp].Chisowt0[iat] );
                         free( pSPARC->nlocProj[ityp].Chisowtl[iat] );
                         free( pSPARC->nlocProj[ityp].Chisowtnl[iat] );
+                        if (pSPARC->CyclixFlag) {
+                            free( pSPARC->nlocProj[ityp].Chisowt0_cyclix[iat] );
+                            free( pSPARC->nlocProj[ityp].Chisowtl_cyclix[iat] );
+                            free( pSPARC->nlocProj[ityp].Chisowtnl_cyclix[iat] );
+                        }
                     }
                     free( pSPARC->nlocProj[ityp].Chisowt0 );
                     free( pSPARC->nlocProj[ityp].Chisowtl );
                     free( pSPARC->nlocProj[ityp].Chisowtnl );
+                    if (pSPARC->CyclixFlag) {
+                        free( pSPARC->nlocProj[ityp].Chisowt0_cyclix );
+                        free( pSPARC->nlocProj[ityp].Chisowtl_cyclix );
+                        free( pSPARC->nlocProj[ityp].Chisowtnl_cyclix );
+                    }
                 }
             }
             free(pSPARC->nlocProj);
@@ -468,6 +513,12 @@ void Free_scfvar(SPARC_OBJ *pSPARC) {
                     free( pSPARC->nlocProj_kptcomm[ityp].Chi_c[iat] );
                 }
                 free(pSPARC->nlocProj_kptcomm[ityp].Chi_c);
+                if (pSPARC->CyclixFlag) {
+                    for (iat = 0; iat < pSPARC->Atom_Influence_nloc_kptcomm[ityp].n_atom; iat++) {
+                        free( pSPARC->nlocProj_kptcomm[ityp].Chi_c_cyclix[iat] );
+                    }
+                    free( pSPARC->nlocProj_kptcomm[ityp].Chi_c_cyclix);
+                }
             }
             if (pSPARC->SOC_Flag == 1) {
                 for (ityp = 0; ityp < pSPARC->Ntypes; ityp++) { 
@@ -475,8 +526,14 @@ void Free_scfvar(SPARC_OBJ *pSPARC) {
                     if (! pSPARC->nlocProj_kptcomm[ityp].nprojso) continue;
                     for (iat = 0; iat < pSPARC->Atom_Influence_nloc_kptcomm[ityp].n_atom; iat++) {
                         free( pSPARC->nlocProj_kptcomm[ityp].Chiso[iat] );
+                        if (pSPARC->CyclixFlag) {
+                            free(pSPARC->nlocProj_kptcomm[ityp].Chiso_cyclix[iat]);
+                        }
                     }
                     free( pSPARC->nlocProj_kptcomm[ityp].Chiso );
+                    if (pSPARC->CyclixFlag) {
+                        free(pSPARC->nlocProj_kptcomm[ityp].Chiso_cyclix);
+                    }
                 }
                 for (ityp = 0; ityp < pSPARC->Ntypes; ityp++) { 
                     // if (! pSPARC->nlocProj[ityp].nproj) continue;
@@ -485,10 +542,20 @@ void Free_scfvar(SPARC_OBJ *pSPARC) {
                         free( pSPARC->nlocProj_kptcomm[ityp].Chisowt0[iat] );
                         free( pSPARC->nlocProj_kptcomm[ityp].Chisowtl[iat] );
                         free( pSPARC->nlocProj_kptcomm[ityp].Chisowtnl[iat] );
+                        if (pSPARC->CyclixFlag) {
+                            free( pSPARC->nlocProj_kptcomm[ityp].Chisowt0_cyclix[iat] );
+                            free( pSPARC->nlocProj_kptcomm[ityp].Chisowtl_cyclix[iat] );
+                            free( pSPARC->nlocProj_kptcomm[ityp].Chisowtnl_cyclix[iat] );
+                        }
                     }
                     free( pSPARC->nlocProj_kptcomm[ityp].Chisowt0 );
                     free( pSPARC->nlocProj_kptcomm[ityp].Chisowtl );
                     free( pSPARC->nlocProj_kptcomm[ityp].Chisowtnl );
+                    if (pSPARC->CyclixFlag) {
+                        free( pSPARC->nlocProj_kptcomm[ityp].Chisowt0_cyclix );
+                        free( pSPARC->nlocProj_kptcomm[ityp].Chisowtl_cyclix );
+                        free( pSPARC->nlocProj_kptcomm[ityp].Chisowtnl_cyclix );
+                    }
                 }
             }
             free(pSPARC->nlocProj_kptcomm);

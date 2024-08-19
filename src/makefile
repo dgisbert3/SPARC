@@ -33,7 +33,7 @@ ENABLE_SIMD_COMPLEX = 1
 # BLASROOT = /usr/lib64
 # LDFLAGS += -L$(BLASROOT)
 
-CPPFLAGS = -Iinclude/ -Ixc/exx/include -Ixc/vdW/d3/include -Ixc/vdW/vdWDF/include -Ixc/mgga/include -IorderN/sq/include
+CPPFLAGS = -Iinclude/ -Ixc/exx/include -Ixc/vdW/d3/include -Ixc/vdW/vdWDF/include -Ixc/mgga/include -IhighT/include -Icyclix/include -Icyclix/cylix_mlff -IhighT/mlff_highT -Imlff/
 LDLIBS   = -lrt
 
 ifeq ($(USE_MKL), 1)
@@ -66,7 +66,7 @@ endif
 
 # to compile with DEBUG mode
 ifeq ($(DEBUG_MODE), 1)
-CPPFLAGS += -Wall -g -DDEBUG # -Werror-implicit-function-declaration
+CPPFLAGS += -Wall -g -DDEBUG # -Wno-format-truncation -Wno-stringop-truncation
 endif
 
 # to enable SIMD for complex stencil routines
@@ -88,16 +88,23 @@ OBJSC = main.o initialization.o readfiles.o atomdata.o parallelization.o relax.o
         xc/vdW/d3/d3correction.o xc/vdW/d3/d3findR0ab.o xc/vdW/d3/d3copyC6.o                       \
         xc/vdW/d3/d3initialization.o xc/vdW/d3/d3finalization.o xc/vdW/d3/d3forceStress.o          \
         xc/vdW/vdWDF/vdWDFinitialization.o xc/vdW/vdWDF/vdWDFfinalization.o                        \
-        xc/vdW/vdWDF/vdWDFexchangeLinearCorre.o xc/vdW/vdWDF/vdWDFnonlinearCorre.o                 \
-        xc/vdW/vdWDF/vdWDFstress.o xc/vdW/vdWDF/vdWDFgenerateKernelSpline.o                        \
-        xc/mgga/MGGAscan.o xc/mgga/MGGASscan.o xc/mgga/MGGAhamiltonianTerm.o xc/mgga/MGGAstress.o  \
-        xc/mgga/MGGAinitialization.o xc/mgga/MGGAfinalization.o xc/mgga/MGGAexchangeCorrelation.o  \
+        xc/vdW/vdWDF/vdWDFnonlinearCorre.o xc/vdW/vdWDF/vdWDFreadKernel.o                 \
+        xc/vdW/vdWDF/vdWDFstress.o xc/vdW/vdWDF/vdWDFparallelization.o                        \
+        xc/mgga/mGGAscan.o xc/mgga/mGGArscan.o xc/mgga/mGGAr2scan.o xc/mgga/mGGAhamiltonianTerm.o  \
+        xc/mgga/mGGAinitialization.o xc/mgga/mGGAfinalization.o xc/mgga/mGGAtauTransferTauVxc.o  \
+        xc/mgga/mGGAstress.o \
         xc/exx/exactExchange.o xc/exx/exactExchangeKpt.o xc/exx/exactExchangeInitialization.o      \
         xc/exx/exactExchangeFinalization.o xc/exx/exactExchangeStress.o                            \
         xc/exx/exactExchangePressure.o xc/exx/exactExchangeEnergyDensity.o \
-        orderN/sq/sq.o orderN/sq/sqInitialization.o orderN/sq/sqFinalization.o orderN/sq/sqEnergy.o\
-        orderN/sq/sqDensity.o orderN/sq/sqNlocVecRoutines.o orderN/sq/sqParallelization.o          \
-        orderN/sq/sqProperties.o orderN/sq/sqtool.o   
+        highT/sq.o highT/sqInitialization.o highT/sqFinalization.o highT/sqEnergy.o\
+        highT/sqDensity.o highT/sqNlocVecRoutines.o highT/sqParallelization.o          \
+        highT/sqProperties.o highT/sqtool.o   \
+        cyclix/cyclix_tools.o cyclix/cyclix_forces.o cyclix/cyclix_gradVec.o cyclix/cyclix_lapVec.o \
+        cyclix/cyclix_stress.o \
+        mlff/covariance_matrix.o mlff/regression.o mlff/spherical_harmonics.o mlff/soap_descriptor.o mlff/sparc_mlff_interface.o \
+        mlff/bessel_NR.o mlff/nrutils.o mlff/sparsification.o mlff/tools_mlff.o mlff/mlff_read_write.o \
+        mlff/descriptor.o mlff/ddbp_tools.o highT/mlff_highT/internal_energy_model.o cyclix/cylix_mlff/cyclix_mlff_tools.o \
+        mlff/hnl_soap.o
 
 LIBBASE = ../lib/sparc
 TESTBASE = ../.ci
