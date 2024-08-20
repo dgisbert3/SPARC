@@ -675,11 +675,11 @@ void set_defaults(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
     strncpy(pSPARC_Input->XC, "UNDEFINED",sizeof(pSPARC_Input->XC));      // default: UNDEFINED
 
     /* default electrostatics. */
-	pSPARC_Input->ElectricFieldX = 0.0;
-	pSPARC_Input->ElectricFieldY = 0.0;
-	pSPARC_Input->ElectricFieldZ = 0.0;
+    pSPARC_Input->ElectricFieldX = 0.0;
+    pSPARC_Input->ElectricFieldY = 0.0;
+    pSPARC_Input->ElectricFieldZ = 0.0;
     pSPARC_Input->L_MAX_Molecule = 6;        // default number of terms for molecule BC
-    pSPARC_Input->L_MAX_1_Wire   = 6;        // default number of terms for wire BC: log terms
+    pSPARC_Input->L_MAX_1_Wire   = 0;        // default number of terms for wire BC: log terms
     pSPARC_Input->L_MAX_2_Wire   = 0;        // default number of terms for wire BC: Bessel terms
     pSPARC_Input->ECUT_Surface   = 0.0;      // energy cutoff for Fourier expansion in surface BC (0 means no terms)
 

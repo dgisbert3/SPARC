@@ -1261,9 +1261,9 @@ void read_input(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC) {
         exit(EXIT_FAILURE);
     }
 
-    free(input_filename);
-    free(str);
-    free(temp);
+    // free(input_filename);
+    // free(str);
+    // free(temp);
     fclose(input_fp);
 } 
 
@@ -2130,5 +2130,4 @@ void read_pseudopotential_PSP(SPARC_INPUT_OBJ *pSPARC_Input, SPARC_OBJ *pSPARC)
         exit(EXIT_FAILURE);
     }
 }
-
 

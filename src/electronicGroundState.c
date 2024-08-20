@@ -570,9 +570,9 @@ void scf(SPARC_OBJ *pSPARC)
     // solve the poisson equation for electrostatic potential, "phi"
     Calculate_elecstPotential(pSPARC);
 
-    #ifdef DEBUG                                         // DEBUG E1+E2: Electrostatic energy
-    Calculate_Free_Energy(pSPARC, pSPARC->electronDens); // DEBUG E1+E2: Electrostatic energy
-    #endif                                               // DEBUG E1+E2: Electrostatic energy
+    //  #ifdef DEBUG                                         // DEBUG E1+E2: Electrostatic energy
+    //  Calculate_Free_Energy(pSPARC, pSPARC->electronDens); // DEBUG E1+E2: Electrostatic energy
+    //  #endif                                               // DEBUG E1+E2: Electrostatic energy
 
     #ifdef DEBUG
     t1 = MPI_Wtime();
